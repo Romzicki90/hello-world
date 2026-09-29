@@ -45,6 +45,9 @@ PLANTED = {
     "SAL-CN-01": ("exception_id", {"9000009101", "9000009102"}),
     "SAL-AR-01": ("doc_number", {"1800009001"}),
     "SAL-BLOCKED-01": ("exception_id", {"9000009201"}),
+    "SAL-RETURN-01": ("exception_id", {"7100000001/10"}),
+    "SAL-RETURN-02": ("exception_id", {"7100000003/10", "7100000004/10", "7100000005/10", "7100000006/10",
+                                       "7100000007/10"}),
     "PRJ-COST-01": ("exception_id", {"P-1001", "P-1003"}),
     "PRJ-TIME-01": ("exception_id", {"P-1001", "P-1004"}),
     "PRJ-POSTCLOSE-01": ("exception_id", {"P-1005"}),
@@ -338,17 +341,18 @@ def generate(target: Path, seed: int = 7) -> Path:
     customers[8] = ["300009", "Blocked Customer", "01.04.2015", "X", "01", "", ""]
     billing, fbl5n = [], []
     prices = {20000001: 50000, 20000002: 42000}
-    inv_dates = {}
+    inv_dates, inv_info = {}, {}
+    fixed_dates = {5: "2025-05-10", 6: "2025-06-01", 7: "2025-06-01", 8: "2025-07-01", 9: "2025-08-01",
+                   11: "2025-09-01", 12: "2025-10-01"}
     for i in range(1, 61):
         doc = 9000000000 + i
         material = rng.choice(list(prices))
         date = rand_date(PERIOD_FROM, PERIOD_TO)
-        if i == 5:
-            date = D("2025-05-10")
-        if i == 6:
-            date = D("2025-06-01")
+        if i in fixed_dates:
+            date = D(fixed_dates[i])
         inv_dates[doc] = date
         qty = rng.randint(50, 200)
+        inv_info[doc] = (material, date, qty)
         price = prices[material] * rng.uniform(1.0, 1.05)
         value = round(qty * price, 2)
         customer = 300001 + rng.randrange(8)
@@ -369,6 +373,34 @@ def generate(target: Path, seed: int = 7) -> Path:
     billing.append(["9000009201", "000010", "F2", "05.11.2025", "300009", matnr(20000002), 10, "TO", 420000.0, "", "", "1000"])
     fbl5n.append(["1000", "300001", "1800009001", "RV", "15.09.2025", "15.10.2025", indian(1200000), "", "", ""])
     fbl5n.append(["1000", "300004", "1800009002", "RV", "16.01.2026", "15.02.2026", indian(900000), "", "", ""])
+    for row in billing:  # CMO-style region and branch sales office
+        customer = int(row[4])
+        row += ["ER" if customer % 2 else "WR", f"BSO-{customer % 4 + 1:02d}"]
+
+    # ---------------- sales returns / quality complaints (ZSDR084 style)
+    def ret(no, invoice, qty, request, receipt, reason, qc="Accepted", approval="EW/2025/123", cn="CN-1",
+            customer="300001", delivery=""):
+        material = inv_info[invoice][0] if invoice else 20000001
+        return [str(no), "10", customer, str(invoice) if invoice else "", delivery, matnr(material), qty, "TO",
+                round(qty * prices[material], 2), sap_date(D(request)), sap_date(D(receipt)) if receipt else "",
+                reason, qc, approval, cn, "BSO-01"]
+
+    returns = [
+        # late return: 120 days after invoice 9000000007 (01.06.2025)
+        ret(7100000001, 9000000007, 10, "2025-09-29", "2025-10-10", "Quality - lamination"),
+        # near-miss: clean return within 20 days
+        ret(7100000002, 9000000008, 5, "2025-07-21", "2025-07-30", "Quality - surface defect"),
+        # no link to invoice or delivery
+        ret(7100000003, None, 8, "2025-11-10", "2025-11-20", "Quality - dimension"),
+        # returned more than invoiced (invoice 9000000009 has at most 200)
+        ret(7100000004, 9000000009, 500, "2025-08-20", "2025-08-28", "Quality - bend"),
+        # risk reason: wrong specification
+        ret(7100000005, 9000000011, 6, "2025-09-15", "2025-09-25", "Wrong specification supplied"),
+        # QC decision not recorded
+        ret(7100000006, 9000000012, 4, "2025-10-15", "2025-10-25", "Quality - rust", qc=""),
+        # credit note issued, no receipt of material recorded
+        ret(7100000007, 9000000011, 3, "2025-09-20", None, "Quality - edge crack", cn="CN-7"),
+    ]
 
     # ---------------- projects
     wbs = [
@@ -462,7 +494,11 @@ def generate(target: Path, seed: int = 7) -> Path:
     write_xlsx(ext / "KNA1.xlsx", ["KUNNR", "NAME1", "ERDAT", "SPERR", "AUFSD", "FAKSD", "LOEVM"], customers)
     write_xlsx(ext / "VF05N.xlsx", ["Billing Document", "Item", "Billing Type", "Billing Date", "Sold-To Party",
                                     "Material", "Billed Quantity", "Sales Unit", "Net Value", "Reference Document",
-                                    "Cancelled", "Plant"], billing)
+                                    "Cancelled", "Plant", "Region", "Sales Office"], billing)
+    write_xlsx(ext / "ZSDR084.xlsx", ["Complaint No", "Return Item", "Customer", "Invoice No", "Delivery No",
+                                      "Material", "Return Qty", "UoM", "Return Value", "Complaint Date",
+                                      "Receipt Date", "Reason", "QC Status", "Approval Ref", "Credit Note", "Branch"],
+               returns, title_lines=["Quality Complaint / Return Report (synthetic)"])
     write_xlsx(ext / "CN43N.xlsx", ["WBS Element", "Project Definition", "Description", "System Status",
                                     "Basic start date", "Basic finish date", "Actual finish", "TECO date", "Plant"],
                wbs)
@@ -477,15 +513,36 @@ def generate(target: Path, seed: int = 7) -> Path:
                 for m, p in prices.items()])
     write_xlsx(crit / "holidays.xlsx", ["Date", "Description"], [[sap_date(d), n] for d, n in HOLIDAYS])
 
+    sources = {
+        "po_items": ("extracts/ME2N.xlsx", "ME2N (selection WE101)", len(po_rows), sum(r[15] for r in po_rows)),
+        "material_docs": ("extracts/MB51.txt", "MB51", len(md_rows), sum(_num(r[9]) for r in md_rows)),
+        "stock": ("extracts/MB52.xlsx", "MB52 as on 31.03.2026", len(stock_rows), sum(r[6] for r in stock_rows)),
+        "grir": ("extracts/MB5S.xlsx", "MB5S", len(grir_rows), sum(r[7] for r in grir_rows)),
+        "vendor_master": ("extracts/LFA1.xlsx", "SE16N LFA1", len(vendors), None),
+        "vendor_items": ("extracts/FBL1N.xlsx", "FBL1N all items", len(vi_rows), sum(_num(r[8]) for r in vi_rows)),
+        "gl_items": ("extracts/FBL3N.tsv", "FBL3N", len(gl_rows), None),
+        "customer_items": ("extracts/FBL5N.xlsx", "FBL5N all items", len(fbl5n), sum(_num(r[6]) for r in fbl5n)),
+        "customer_master": ("extracts/KNA1.xlsx", "SE16N KNA1", len(customers), None),
+        "billing_items": ("extracts/VF05N.xlsx", "VF05N", len(billing), sum(r[8] for r in billing)),
+        "sales_returns": ("extracts/ZSDR084.xlsx", "ZSDR084", len(returns), sum(r[6] for r in returns)),
+        "approved_prices": ("criteria/approved_prices.xlsx", "Price circular keyed in by audit", None, None),
+        "wbs_master": ("extracts/CN43N.xlsx", "CN43N", len(wbs), None),
+        "wbs_budget": ("extracts/S_ALR_87013558.xlsx", "S_ALR_87013558", len(budget), sum(r[2] for r in budget)),
+        "wbs_costs": ("extracts/CJI3.xlsx", "CJI3", len(cji3), sum(r[4] for r in cji3)),
+        "assets": ("extracts/AR01.xlsx", "AR01 as on 31.03.2026", len(assets), sum(r[6] for r in assets)),
+        "holidays": ("criteria/holidays.xlsx", "Holiday circular keyed in by audit", None, None),
+    }
     profile = target / "demo_profile.toml"
-    profile.write_text(DEMO_PROFILE, encoding="utf-8")
+    profile.write_text(demo_profile_text(sources), encoding="utf-8")
     return profile
 
 
-DEMO_PROFILE = """\
+DEMO_HEADER = """\
 # Demo run profile for the synthetic 'Demo Steel Ltd' extracts.
 # The demo lists every topic that has a library test (more than the sixteen a real plan lists)
-# plus two on-site topics, so that every test runs.
+# plus two on-site topics, so that every test runs. The SAP control figures (control_rows,
+# control_total) are the counts and totals the generator wrote, standing in for the figures an
+# auditor would copy from the SAP report.
 
 [audit]
 company = "Demo Steel Ltd (synthetic)"
@@ -499,60 +556,14 @@ cutoff_date = 2026-03-31
 [sap]
 decimal_notation = "1,234,567.89"
 date_format = "DD.MM.YYYY"
+"""
 
-[datasets.po_items]
-files = ["extracts/ME2N.xlsx"]
-sap_report = "ME2N (selection WE101)"
-[datasets.material_docs]
-files = ["extracts/MB51.txt"]
-sap_report = "MB51"
-[datasets.stock]
-files = ["extracts/MB52.xlsx"]
-sap_report = "MB52 as on 31.03.2026"
-[datasets.grir]
-files = ["extracts/MB5S.xlsx"]
-sap_report = "MB5S"
-[datasets.vendor_master]
-files = ["extracts/LFA1.xlsx"]
-sap_report = "SE16N LFA1"
-[datasets.vendor_items]
-files = ["extracts/FBL1N.xlsx"]
-sap_report = "FBL1N all items"
-[datasets.gl_items]
-files = ["extracts/FBL3N.tsv"]
-sap_report = "FBL3N"
-[datasets.customer_items]
-files = ["extracts/FBL5N.xlsx"]
-sap_report = "FBL5N all items"
-[datasets.customer_master]
-files = ["extracts/KNA1.xlsx"]
-sap_report = "SE16N KNA1"
-[datasets.billing_items]
-files = ["extracts/VF05N.xlsx"]
-sap_report = "VF05N"
-[datasets.approved_prices]
-files = ["criteria/approved_prices.xlsx"]
-sap_report = "Price circular keyed in by audit"
-[datasets.wbs_master]
-files = ["extracts/CN43N.xlsx"]
-sap_report = "CN43N"
-[datasets.wbs_budget]
-files = ["extracts/S_ALR_87013558.xlsx"]
-sap_report = "S_ALR_87013558"
-[datasets.wbs_costs]
-files = ["extracts/CJI3.xlsx"]
-sap_report = "CJI3"
-[datasets.assets]
-files = ["extracts/AR01.xlsx"]
-sap_report = "AR01 as on 31.03.2026"
-[datasets.holidays]
-files = ["criteria/holidays.xlsx"]
-
+DEMO_FOOTER = """
 [annexure_ii]
 topics = [
   "T1A01", "T1A02", "T1A03", "T1A04", "T1A06", "T1A07", "T1A08", "T1A10", "T1B01", "T1B03",
   "T2A01", "T2A02", "T2A05", "T2A07",
-  "T3A01", "T3A04", "T3A07", "T3A08",
+  "T3A01", "T3A04", "T3A05", "T3A07", "T3A08",
   "T4A02", "T4A03", "T4A04", "T4A05", "T4A07", "T4A08",
   "T7A01", "T7A02", "T7A04", "T7A05", "T7A08", "T7B01", "T7B02", "T7B05",
   "T9A01", "TCS01", "TCS02",
@@ -570,4 +581,61 @@ exclude_doc_types = ["ZRC"]
 
 [params."FIN-SENSGL-01"]
 sensitive_gls = ["450000"]
+
+[params."SAL-RETURN-01"]
+max_return_days = 60             # demo value; a real audit takes it from the approved return policy
 """
+
+
+def self_test() -> tuple[bool, list[str]]:
+    """Runs every library test on freshly generated synthetic data and checks that each finds
+    exactly its planted exceptions (no more, no fewer). Used by the window's Self-test button."""
+    import tempfile
+
+    from .engine import EXCEPTIONS, run
+    from .loader import load_library
+    from .profile import load_profile
+
+    lib = load_library()
+    with tempfile.TemporaryDirectory(prefix="auditwb_selftest_") as tmp:
+        result = run(load_profile(generate(Path(tmp))), lib, progress=lambda *_: None)
+    lines, failed = [], 0
+    for test_id in lib.tests:
+        if test_id not in PLANTED:
+            failed += 1
+            lines.append(f"  FAIL  {test_id}: no planted cases defined")
+            continue
+        r = result.result(test_id)
+        column, expected = PLANTED[test_id]
+        found = {str(row[r.columns.index(column)]) for row in r.rows} if r.executed else set()
+        ok = r.status == EXCEPTIONS and found == expected
+        failed += not ok
+        detail = f"found {len(found)} of {len(expected)} planted" if ok else (
+            f"status {r.status}; missed {sorted(expected - found)}; unexpected {sorted(found - expected)} {r.message}")
+        lines.append(f"  {'PASS' if ok else 'FAIL'}  {test_id}: {detail}")
+    if failed:
+        lines.append(f"Self-test FAILED for {failed} rule(s). Do not use this copy; report the lines above.")
+    else:
+        lines.append(f"Self-test passed: all {len(lib.tests)} rules found exactly their planted exceptions "
+                     f"and none of the near-misses.")
+    return not failed, lines
+
+
+def _num(value) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    return -float(s[:-1].replace(",", "")) if s.endswith("-") else float(s.replace(",", ""))
+
+
+def demo_profile_text(sources: dict) -> str:
+    """sources: dataset -> (file, sap report, rows or None, control total or None)."""
+    parts = [DEMO_HEADER]
+    for ds, (file, report, rows, total) in sources.items():
+        parts.append(f"[datasets.{ds}]\nfiles = [\"{file}\"]\nsap_report = \"{report}\"")
+        if rows is not None:
+            parts.append(f"control_rows = {rows}")
+        if total is not None:
+            parts.append(f"control_total = {round(total, 2)}")
+    parts.append(DEMO_FOOTER)
+    return "\n".join(parts)

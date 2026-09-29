@@ -31,10 +31,22 @@ result can read the SQL on the test's sheet.
 4. **Not executable is not NIL.** If an extract, a column or a criterion
    (for example, the sensitive G/L list) is missing, the test is reported
    NOT EXECUTABLE with the reason. It is never shown as nil exceptions.
-5. **Completeness first.** The Data Quality sheet shows file hashes, rows
-   loaded, lines dropped (and why), control totals, date ranges and
-   unreadable values. Reconcile these before relying on a NIL result.
-6. **Annexure-I is the backbone.** Every test maps to catalogue topic IDs
+5. **NIL only after reconciliation.** For each SAP extract the team enters
+   the row count and the total that SAP shows for the report. The workbench
+   compares them with what it loaded. A test with no exceptions shows
+   `NIL - RECONCILED`, which counts as analytical assurance, only if every
+   extract it used agrees. Otherwise it shows `NIL - NOT RECONCILED`, and
+   Annexure-II says it is not assurance.
+6. **Blocked, not double-counted.** Master data must have unique keys (one
+   row per vendor, customer, WBS or PO item). Criteria files must not have
+   overlapping validity periods (for example, two approved prices for the
+   same material on the same date). If either condition fails, the
+   dependent tests are BLOCKED and the offending records are listed.
+7. **Coverage is visible.** Each test reports how much of its population
+   could be fully evaluated, for example credit notes linked to the
+   original invoice, invoices matched to a price, or receivables with the
+   SAP due date.
+8. **Annexure-I is the backbone.** Every test maps to catalogue topic IDs
    (`T1A01` = BP1 Priority-I Sl.1). IDs are permanent: when DAC revises the
    catalogue, the Annexure-I reference changes and the ID does not.
 
@@ -42,13 +54,13 @@ result can read the SQL on the test's sheet.
 
 All 166 Annexure-I topics are in the catalogue, plus two MSME topics
 (OO-53 para 13). The Remote/On-site mode for each follows OO-53 para 4.
-34 tests cover these processes:
+36 tests cover these processes:
 
 | Process | Tests |
 |---|---|
 | Procurement | split POs, PO without PR, PO after GR, open POs, price variation, new/blocked vendors, GR/IR mismatch, vendor concentration, delayed delivery (LD) |
 | Inventory | negative stock, non-moving stock, manual adjustments / PI differences / write-offs, GR not invoiced |
-| Sales | below approved price, credit notes, overdue receivables, sales to blocked customers |
+| Sales | below approved price, credit notes, sales returns beyond the prescribed period (the period must be entered from policy), sales-return integrity flags, overdue receivables, sales to blocked customers |
 | Projects & CWIP | cost overrun / no budget, time overrun, cost after TECO, idle projects, CWIP ageing, TECO projects still in AuC |
 | Finance | duplicate invoices (exact and near), entries after period close, high-value manual JEs, sensitive G/L postings, reversals, round values, holiday entries, long-pending advances |
 | MSME | payments to micro/small enterprises beyond 45 days (with indicative s.16 interest), MSE procurement share vs 25% target |
@@ -98,10 +110,20 @@ Each test has a plain-English rule, parameters with defaults, field questions,
 records required, a population query and the exception query (DuckDB SQL over
 the standard datasets in `auditwb/library/datasets.toml`). The exception query
 must return `exception_id`, `exception_value` and `reason`. It may also
-return `audit_unit`, which feeds the "Units/Departments" column. Add planted
-cases for the new test to `auditwb/synthetic.py`, then run `pytest`. The
-suite fails unless every test finds exactly its planted exceptions and none of
-the near-misses.
+return `audit_unit`, which feeds the "Units/Departments" column. A test can
+also have a `coverage_sql` that returns rows of `(metric, n, of_n)`, and a
+`uses` list for datasets it joins without requiring them. SQL can check
+whether an optional column exists in the extract through the `_mapped`
+table (`dataset`, `field`), so a check never runs on a column that isn't
+there.
+
+Every rule change must come with planted positive cases **and** near-misses
+in `auditwb/synthetic.py` (`PLANTED`). The suite fails if any test has no
+planted cases, or if it finds anything other than exactly its planted
+exceptions. `pytest` runs automatically on GitHub for every change (see
+`.github/workflows/audit-workbench-tests.yml`). The release zip includes
+the suite under `dev/tests`, and the window's **Self-test** button runs the
+same check on any machine.
 
 ## Installing on an office machine with no internet
 

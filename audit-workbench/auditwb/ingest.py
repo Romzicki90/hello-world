@@ -238,7 +238,7 @@ def _cell_text(v) -> str:
 def detect_header(rows: list[list], dataset: Dataset, explicit: dict[str, str]) -> int:
     """Index of the row that best matches the dataset's known column names."""
     wanted = {normalise_header(s) for f in dataset.fields.values() for s in f.synonyms}
-    wanted |= {normalise_header(c) for c in explicit.values()}
+    wanted |= {normalise_header(c) for c in explicit.values() if c}
     best, best_score = -1, 0
     for i, row in enumerate(rows[:HEADER_SCAN_ROWS]):
         score = len({normalise_header(c) for c in row if _cell_text(c)} & wanted)
@@ -252,13 +252,16 @@ def detect_header(rows: list[list], dataset: Dataset, explicit: dict[str, str]) 
 
 
 def map_columns(header: list[str], dataset: Dataset, explicit: dict[str, str]) -> dict[str, int]:
-    """Standard field name -> column index. Explicit mapping wins over synonyms."""
+    """Standard field name -> column index. Explicit mapping wins over synonyms; an
+    explicit empty column name means 'this field is not in the file'."""
     norm = [normalise_header(h) for h in header]
     used: set[int] = set()
     result: dict[str, int] = {}
     for fname, column in explicit.items():
         if fname not in dataset.fields:
             raise IngestError(f"mapping refers to unknown field '{fname}' of dataset '{dataset.id}'")
+        if not column:
+            continue
         key = normalise_header(column)
         if key not in norm:
             raise IngestError(f"mapped column '{column}' for field '{fname}' not found in the header")
@@ -266,7 +269,7 @@ def map_columns(header: list[str], dataset: Dataset, explicit: dict[str, str]) -
         result[fname] = idx
         used.add(idx)
     for fname, f in dataset.fields.items():
-        if fname in result:
+        if fname in result or fname in explicit:
             continue
         for syn in [fname] + f.synonyms:
             key = normalise_header(syn)
@@ -276,6 +279,23 @@ def map_columns(header: list[str], dataset: Dataset, explicit: dict[str, str]) -
                 used.add(idx)
                 break
     return result
+
+
+def preview_columns(path: Path, dataset: Dataset, explicit: dict[str, str] | None = None,
+                    sheet: str | None = None) -> tuple[list[str], dict[str, str]]:
+    """Column headings of an export and the automatic mapping, for the mapping window.
+    If no heading row is recognised, the fullest of the first rows is offered instead."""
+    explicit = explicit or {}
+    rows = read_rows(Path(path), sheet)
+    try:
+        h = detect_header(rows, dataset, explicit)
+    except IngestError:
+        candidates = rows[:HEADER_SCAN_ROWS]
+        h = max(range(len(candidates)), key=lambda i: sum(1 for c in candidates[i] if _cell_text(c)), default=0)
+    header = [_cell_text(c) for c in rows[h]] if rows else []
+    colmap = map_columns(header, dataset, {k: v for k, v in explicit.items() if not v or
+                                           normalise_header(v) in {normalise_header(x) for x in header}})
+    return [c for c in header if c], {f: header[i] for f, i in colmap.items()}
 
 
 # --------------------------------------------------------------------------- loading

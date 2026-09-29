@@ -10,6 +10,7 @@ title = "Projects exceeding the approved budget"
 topics = ["T4A02", "T4A01"]
 exception_unit = "WBS elements"
 requires = ["wbs_budget.wbs_element", "wbs_budget.budget", "wbs_budget.actual"]
+uses = ["wbs_master"]
 rule = """
 WBS elements / projects whose cumulative actual cost (plus commitments, if chosen)
 exceeds the current budget by more than the tolerance %, and, if chosen, elements that
@@ -66,6 +67,7 @@ title = "Projects exceeding the approved completion date"
 topics = ["T4A03"]
 exception_unit = "WBS elements"
 requires = ["wbs_master.wbs_element", "wbs_master.system_status", "wbs_master.basic_finish"]
+uses = ["wbs_budget"]
 rule = """
 (a) WBS elements not yet technically complete whose basic (approved) finish date is
 more than the grace days before the cut-off, and (b) WBS elements completed during or
@@ -176,6 +178,7 @@ title = "Projects inactive despite expenditure"
 topics = ["T4A08"]
 exception_unit = "WBS elements"
 requires = ["wbs_master.wbs_element", "wbs_master.system_status", "wbs_costs.wbs_element", "wbs_costs.posting_date", "wbs_costs.amount"]
+uses = ["wbs_budget"]
 rule = """
 Open WBS elements (not TECO / CLSD / DLFL) with cumulative cost at or above the minimum
 (from the budget report where loaded, else from the cost line items) and no cost posting

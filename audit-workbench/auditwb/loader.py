@@ -41,6 +41,10 @@ class Dataset:
     sap_sources: list[str]
     description: str
     fields: dict[str, Field]
+    unique: list[str] = field(default_factory=list)       # key that must not repeat (master data)
+    no_overlap: dict | None = None                       # {key=[...], from=..., to=...} validity periods
+    control_total: str | None = None                     # field reconciled to the SAP report total
+    criteria: bool = False                               # audit-supplied criteria, not an SAP extract
 
 
 @dataclass
@@ -87,11 +91,14 @@ class Test:
     sql: str
     params: dict[str, Param]
     source_file: str
+    uses: list[str] = field(default_factory=list)   # optional datasets joined if loaded
+    coverage_sql: str = ""                          # rows of (metric, n, of_n)
 
     @property
     def datasets(self) -> list[str]:
         names = [r.split(".")[0] for r in self.requires]
         names += [r.split(".")[0] for group in self.requires_any for r in group]
+        names += self.uses
         return list(dict.fromkeys(names))
 
 
@@ -131,7 +138,19 @@ def load_datasets(path: Path) -> dict[str, Dataset]:
             sap_sources=spec.get("sap_sources", []),
             description=spec.get("description", ""),
             fields=fields,
+            unique=spec.get("unique", []),
+            no_overlap=spec.get("no_overlap"),
+            control_total=spec.get("control_total"),
+            criteria=spec.get("criteria", False),
         )
+        ds = datasets[ds_id]
+        for name in ds.unique + ([ds.control_total] if ds.control_total else []):
+            if name not in fields:
+                raise ValueError(f"{ds_id}: unknown field {name!r} in unique / control_total")
+        if ds.no_overlap:
+            for name in ds.no_overlap["key"] + [ds.no_overlap["from"], ds.no_overlap["to"]]:
+                if name not in fields:
+                    raise ValueError(f"{ds_id}: unknown field {name!r} in no_overlap")
     return datasets
 
 
@@ -173,6 +192,8 @@ def load_tests(directory: Path) -> dict[str, Test]:
                 sql=t["sql"],
                 params=params,
                 source_file=path.name,
+                uses=t.get("uses", []),
+                coverage_sql=t.get("coverage_sql", ""),
             )
     return tests
 
@@ -192,7 +213,10 @@ def validate(lib: Library) -> list[str]:
             ds, _, fld = ref.partition(".")
             if ds not in lib.datasets or fld not in lib.datasets[ds].fields:
                 problems.append(f"{t.id}: requires unknown field {ref}")
-        for sql in (t.sql, t.population_sql):
+        for ds in t.uses:
+            if ds not in lib.datasets:
+                problems.append(f"{t.id}: uses unknown dataset {ds}")
+        for sql in (t.sql, t.population_sql, t.coverage_sql):
             for name in sql_parameters(sql) - GLOBAL_PARAMS:
                 if name not in t.params:
                     problems.append(f"{t.id}: SQL uses ${name} but no such parameter is declared")

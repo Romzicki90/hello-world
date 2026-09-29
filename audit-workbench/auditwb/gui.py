@@ -127,6 +127,7 @@ class App:
         ttk.Button(buttons, text="Save audit settings...", command=self.save_profile).pack(side="left", padx=4)
         ttk.Button(buttons, text="Try with demo data", command=self.load_demo).pack(side="left", padx=4)
         ttk.Button(buttons, text="Check my files", command=self.check_files).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Self-test", command=self.self_test).pack(side="left", padx=4)
         self.open_btn = ttk.Button(buttons, text="Open results folder", command=self.open_results,
                                    state="disabled")
         self.open_btn.pack(side="right")
@@ -241,11 +242,13 @@ class App:
 
     def _build_files_tab(self):
         f = self._tab("3. SAP files", "For each SAP report, choose the exported file(s): Excel (.xlsx) from the "
-                      "list's 'Spreadsheet' export, or text / CSV. You may pick several files for one report (for "
-                      "example one per plant). Reports marked NEEDED are required by the topics you ticked. The "
-                      "files are only read, never changed.")
+                      "list's 'Spreadsheet' export, or text / CSV. Reports marked NEEDED are required by the topics you "
+                      "ticked. Then copy from SAP the number of rows and the total shown for the report: a NIL result "
+                      "counts as assurance only when these agree with what the workbench reads. If the columns are "
+                      "not recognised, use 'Columns...'. The files are only read, never changed.")
         sf = ScrollFrame(f)
         sf.pack(fill="both", expand=True)
+        self.recon_vars: dict[str, tuple[tk.StringVar, tk.StringVar]] = {}
         for r, (ds_id, ds) in enumerate(self.lib.datasets.items()):
             box = ttk.Frame(sf.inner, padding=(0, 4))
             box.grid(row=r, column=0, sticky="ew")
@@ -256,11 +259,22 @@ class App:
             self.need_labels[ds_id] = ttk.Label(head, text="")
             self.need_labels[ds_id].pack(side="left", padx=10)
             ttk.Button(head, text="Clear", command=lambda d=ds_id: self._set_files(d, [])).pack(side="right")
-            ttk.Button(head, text="Choose file(s)...", command=lambda d=ds_id: self._choose_files(d)).pack(
-                side="right", padx=4)
+            ttk.Button(head, text="Columns...", command=lambda d=ds_id: self._map_columns(d)).pack(side="right", padx=4)
+            ttk.Button(head, text="Choose file(s)...", command=lambda d=ds_id: self._choose_files(d)).pack(side="right")
             ttk.Label(box, text="SAP: " + "; ".join(ds.sap_sources), style="Help.TLabel").pack(anchor="w")
             self.file_labels[ds_id] = ttk.Label(box, text="(no file chosen)", wraplength=950)
             self.file_labels[ds_id].pack(anchor="w")
+            if not ds.criteria:
+                rec = ttk.Frame(box)
+                rec.pack(anchor="w", pady=(2, 0))
+                rows_var, total_var = tk.StringVar(), tk.StringVar()
+                ttk.Label(rec, text="SAP row count:").pack(side="left")
+                ttk.Entry(rec, textvariable=rows_var, width=14).pack(side="left", padx=(4, 16))
+                if ds.control_total:
+                    label = ds.fields[ds.control_total].label
+                    ttk.Label(rec, text=f"SAP total of '{label}':").pack(side="left")
+                    ttk.Entry(rec, textvariable=total_var, width=22).pack(side="left", padx=4)
+                self.recon_vars[ds_id] = (rows_var, total_var)
             self.files[ds_id] = []
 
     def _build_settings_tab(self):
@@ -315,6 +329,74 @@ class App:
         self.files[ds_id] = [str(p) for p in paths]
         self.file_labels[ds_id].configure(text="\n".join(self.files[ds_id]) or "(no file chosen)")
         self._update_needed()
+
+    def _needed_fields(self, ds_id, any_of: bool = False) -> set[str]:
+        """Fields the ticked topics require; with any_of=True, fields where one of a group is enough."""
+        fields = set()
+        for t in self.selected_tests():
+            refs = [r for g in t.requires_any for r in g] if any_of else t.requires
+            for ref in refs:
+                ds, _, fld = ref.partition(".")
+                if ds == ds_id:
+                    fields.add(fld)
+        return fields
+
+    def _map_columns(self, ds_id):
+        """Let the team tell the workbench which column of their export is which standard field."""
+        from .ingest import preview_columns
+
+        if not self.files.get(ds_id):
+            messagebox.showinfo(APP_TITLE, "Choose the file first, then set its columns.")
+            return
+        ds = self.lib.datasets[ds_id]
+        spec = self.extra.setdefault("datasets", {}).setdefault(ds_id, {})
+        current = dict(spec.get("columns", {}))
+        try:
+            header, auto = preview_columns(Path(self.files[ds_id][0]), ds, current, spec.get("sheet"))
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Could not read the column headings:\n\n{exc}")
+            return
+        _, auto_only = preview_columns(Path(self.files[ds_id][0]), ds, {}, spec.get("sheet"))
+        needed = self._needed_fields(ds_id)
+        one_of = self._needed_fields(ds_id, any_of=True) - needed
+        none = "(not in this file)"
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Columns: {ds.title}")
+        win.geometry("820x640")
+        win.transient(self.root)
+        ttk.Label(win, text="For each item on the left, pick the column of your file that contains it. The workbench "
+                            "has pre-selected the columns it recognised. Items marked NEEDED are used by the ticked "
+                            "topics; for items marked ONE OF, any one of the group is enough. Choose '(not in this "
+                            "file)' where the file has no such column.",
+                  wraplength=780, style="Help.TLabel").pack(anchor="w", padx=10, pady=8)
+        sf = ScrollFrame(win)
+        sf.pack(fill="both", expand=True, padx=10)
+        choices = {}
+        for r, (fname, fld) in enumerate(ds.fields.items()):
+            mark = "NEEDED" if fname in needed else ("ONE OF" if fname in one_of else "")
+            ttk.Label(sf.inner, text=mark, style="Need.TLabel", width=8).grid(row=r, column=0, sticky="w")
+            ttk.Label(sf.inner, text=fld.label, wraplength=330).grid(row=r, column=1, sticky="w", pady=2)
+            var = tk.StringVar(value=auto.get(fname, none))
+            ttk.Combobox(sf.inner, textvariable=var, values=[none] + header, state="readonly", width=40).grid(
+                row=r, column=2, sticky="w", padx=8)
+            choices[fname] = var
+
+        def save():
+            mapping = {}
+            for fname, var in choices.items():
+                chosen = "" if var.get() == none else var.get()
+                if chosen != auto_only.get(fname, ""):
+                    mapping[fname] = chosen
+            spec["columns"] = mapping
+            self.write(f"Columns set for {ds.title}: {len(mapping)} change(s) from automatic recognition.")
+            win.destroy()
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=10, pady=8)
+        ttk.Button(bar, text="Save", command=save).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=6)
+        self.mapping_window = win
 
     def _choose_results(self):
         path = filedialog.askdirectory(title="Save results in")
@@ -415,6 +497,23 @@ class App:
             if files:
                 spec = dict(self.extra.get("datasets", {}).get(ds_id, {}))
                 spec["files"] = list(files)
+                spec.pop("control_rows", None)
+                spec.pop("control_total", None)
+                rows_var, total_var = self.recon_vars.get(ds_id, (None, None))
+                title = self.lib.datasets[ds_id].title
+                if rows_var and rows_var.get().strip():
+                    try:
+                        spec["control_rows"] = int(rows_var.get().replace(",", "").strip())
+                    except ValueError:
+                        raise ValueError(f"Tab 3, {title}: the SAP row count must be a whole number.") from None
+                if total_var and total_var.get().strip():
+                    from .ingest import parse_number
+                    try:
+                        spec["control_total"] = parse_number(total_var.get(), v["decimal_notation"])
+                    except ValueError:
+                        raise ValueError(f"Tab 3, {title}: the SAP total is not a number.") from None
+                if not spec.get("columns"):
+                    spec.pop("columns", None)
                 raw["datasets"][ds_id] = spec
         if self.extra.get("topic_plans"):
             raw["annexure_ii"]["topic"] = self.extra["topic_plans"]
@@ -438,8 +537,13 @@ class App:
                       "common_params": raw.get("params", {}).get("common", {})}
         for ds_id in self.files:
             spec = raw.get("datasets", {}).get(ds_id, {})
-            self.extra["datasets"][ds_id] = {k: v for k, v in spec.items() if k != "files"}
+            self.extra["datasets"][ds_id] = {k: v for k, v in spec.items()
+                                             if k not in ("files", "control_rows", "control_total")}
             self._set_files(ds_id, spec.get("files", []))
+            if ds_id in self.recon_vars:
+                rows_var, total_var = self.recon_vars[ds_id]
+                rows_var.set(f"{spec['control_rows']}" if spec.get("control_rows") is not None else "")
+                total_var.set(f"{spec['control_total']:.2f}" if spec.get("control_total") is not None else "")
         self.param_values = {k: dict(v) for k, v in raw.get("params", {}).items()
                              if k != "common" and k in self.lib.tests}
         self.param_widgets = {}
@@ -497,7 +601,7 @@ class App:
     # ------------------------------------------------------------------ checking and running
 
     def check_files(self):
-        from .engine import DatasetStatus, check_executable, resolve_params
+        from .engine import DatasetStatus, check_executable, reconcile, resolve_params
         from .ingest import load_dataset
 
         try:
@@ -515,9 +619,22 @@ class App:
                 st.load = load_dataset(self.lib.datasets[ds_id], src.files, explicit=src.columns,
                                        decimal_notation=profile.decimal_notation, date_format=profile.date_format)
                 rows = sum(f.rows_loaded for f in st.load.files)
+                ds = self.lib.datasets[ds_id]
                 self.write(f"  {st.title}: {rows} rows read; {len(st.load.mapped_fields)} columns recognised")
+                missing = sorted(self._needed_fields(ds_id) - st.load.mapped_fields)
+                any_of = self._needed_fields(ds_id, any_of=True)
+                if any_of and not any_of & st.load.mapped_fields:
+                    missing += sorted(any_of)
+                if missing:
+                    self.write(f"     NEEDED but not recognised: {', '.join(ds.fields[m].label for m in missing)}"
+                               f"  -> use 'Columns...' on tab 3")
                 for w in st.load.warnings:
                     self.write(f"     WARNING: {w}")
+                ctrl = ds.control_total
+                if ctrl and ctrl in st.load.mapped_fields:
+                    st.control_totals[ctrl] = (sum(r[ctrl] for r in st.load.rows if r.get(ctrl) is not None), 0)
+                reconcile(st, ds, src)
+                self.write(f"     reconciliation: {st.recon_status}: {st.recon_note}")
             except Exception as exc:
                 self.write(f"  {st.title}: PROBLEM: {exc}")
         ready = 0
@@ -528,6 +645,25 @@ class App:
             else:
                 ready += 1
         self.write(f"Check finished: {ready} of {len(self.selected_tests())} tests ready to run.")
+
+    def self_test(self):
+        """Runs every rule on the built-in synthetic data and checks it finds exactly what was planted."""
+        from .synthetic import self_test
+
+        if self.running:
+            return
+        self.write("Self-test: running every rule on made-up data with known planted exceptions...")
+        self.running = True
+        self.progress.start(12)
+
+        def work():
+            try:
+                ok, lines = self_test()
+                self.log_queue.put(("selftest", ok, lines))
+            except Exception as exc:
+                self.log_queue.put(("selftest", False, [f"Self-test could not run: {exc}"]))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _profile(self, raw, path):
         from .profile import profile_from_dict
@@ -577,10 +713,14 @@ class App:
             lines = []
             for r in result.results:
                 detail = f"{r.n_exceptions} {r.test.exception_unit}" if r.executed else r.message
-                lines.append(f"  {r.test.id:<18} {r.status:<15} {detail}")
+                lines.append(f"  {r.test.id:<18} {r.display_status:<34} {detail}")
+                if r.coverage:
+                    lines.append(f"  {'':<18} coverage: {r.coverage_text()}")
+            nil_unrec = sum(r.status == NIL and not r.reconciled for r in result.results)
             summary = (f"Finished. {sum(r.status == EXCEPTIONS for r in result.results)} tests found exceptions, "
-                       f"{sum(r.status == NIL for r in result.results)} found none, "
-                       f"{sum(not r.executed for r in result.results)} could not run.")
+                       f"{sum(r.status == NIL for r in result.results)} found none"
+                       + (f" ({nil_unrec} of them on input NOT reconciled to SAP)" if nil_unrec else "")
+                       + f", {sum(not r.executed for r in result.results)} could not run or were blocked.")
             self.log_queue.put(("done", out, lines, summary, wp, ax))
         except Exception as exc:
             self.log_queue.put(("error", exc, traceback.format_exc()))
@@ -598,6 +738,13 @@ class App:
                     self._finish(ok=True, out=out)
                     if messagebox.askyesno(APP_TITLE, f"{summary}\n\nOpen the results folder now?"):
                         open_folder(out)
+                elif isinstance(item, tuple) and item[0] == "selftest":
+                    _, ok, lines = item
+                    for line in lines:
+                        self.write(line)
+                    self.running = False
+                    self.progress.stop()
+                    (messagebox.showinfo if ok else messagebox.showerror)(APP_TITLE, lines[-1])
                 elif isinstance(item, tuple) and item[0] == "error":
                     _, exc, tb = item
                     self.write("ERROR: " + str(exc))

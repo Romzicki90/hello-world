@@ -20,7 +20,7 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from .engine import EXCEPTIONS, NIL, NOT_EXECUTABLE, Run, TestResult
+from .engine import BLOCKED, CRITERIA, DIFFERENCE, EXCEPTIONS, NIL, NOT_EXECUTABLE, RECONCILED, Run, TestResult
 from .ingest import sha256_of
 
 EXCEL_MAX_ROWS = 1_000_000
@@ -43,7 +43,14 @@ DISCLAIMER = (
     "sanction shall be treated as verified on the basis of remote analysis alone (OO-53 para 10)."
 )
 
-STATUS_FILL = {EXCEPTIONS: FLAG_FILL, NIL: OK_FILL, NOT_EXECUTABLE: GREY_FILL}
+STATUS_FILL = {EXCEPTIONS: FLAG_FILL, NIL: OK_FILL, NOT_EXECUTABLE: GREY_FILL, BLOCKED: FLAG_FILL}
+RECON_FILL = {RECONCILED: OK_FILL, CRITERIA: OK_FILL, DIFFERENCE: FLAG_FILL}
+
+
+def status_fill(r):
+    if r.status == NIL and not r.reconciled:
+        return GREY_FILL
+    return STATUS_FILL.get(r.status)
 
 
 def lakh(value):
@@ -118,8 +125,10 @@ def _cover(wb, run: Run):
         ("Run profile", str(p.path)), ("Run profile SHA-256", sha256_of(p.path)),
         ("Tests run", len(run.results)),
         ("With exceptions", sum(r.status == EXCEPTIONS for r in run.results)),
-        ("Nil exceptions", sum(r.status == NIL for r in run.results)),
-        ("Not executable / error", sum(not r.executed for r in run.results)),
+        ("Nil exceptions, input reconciled", sum(r.status == NIL and r.reconciled for r in run.results)),
+        ("Nil exceptions, input NOT reconciled", sum(r.status == NIL and not r.reconciled for r in run.results)),
+        ("Blocked (criteria / master data conflict)", sum(r.status == BLOCKED for r in run.results)),
+        ("Not executable / error", sum(not r.executed and r.status != BLOCKED for r in run.results)),
     ]:
         _kv(ws, k, v)
     ws.append([])
@@ -129,30 +138,34 @@ def _cover(wb, run: Run):
         "workbench version with the same profile on files with the same SHA-256 hashes (Data Quality sheet) "
         "reproduces these results.")
     _kv(ws, "Status legend",
-        "EXCEPTIONS: rule found exceptions. NIL: rule ran on the data and found none (analytical assurance, "
-        "subject to the completeness of the extract). NOT EXECUTABLE: required data, fields or criteria were "
-        "not available; this is NOT a nil result. ERROR: the test failed; see the note.")
+        "EXCEPTIONS: rule found exceptions. NIL - RECONCILED: rule ran on data reconciled to the SAP row count / "
+        "total and found none (analytical assurance). NIL - NOT RECONCILED: no exceptions, but the input was not "
+        "reconciled to SAP control figures, so it is NOT analytical assurance. BLOCKED: master or criteria data has "
+        "duplicate keys or overlapping validity periods; the test was not run to avoid double counting. "
+        "NOT EXECUTABLE: required data, fields or criteria were not available; this is NOT a nil result. "
+        "ERROR: the test failed; see the note.")
 
 
 def _summary(wb, run: Run):
     ws = wb.create_sheet("Summary")
-    widths = [16, 48, 60, 16, 14, 16, 12, 18, 16, 60, 70]
+    widths = [16, 48, 60, 22, 14, 16, 12, 18, 16, 60, 60, 70]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
     head = ["Test ID", "Test", "Annexure-I topic(s)", "Status", "Population (no.)",
             "Population value (Rs. lakh)", "Exceptions", "Counted as", "Value involved (Rs. lakh)",
-            "Units with most exceptions", "Note"]
+            "Units with most exceptions", "Coverage", "Note"]
     ws.append([_cell(ws, h, font=BOLD, fill=HEADER_FILL, wrap=True) for h in head])
     for r in run.results:
         ws.append([
             _cell(ws, r.test.id), _cell(ws, r.test.title, wrap=True),
             _cell(ws, "; ".join(_topic_label(run, t) for t in r.test.topics), wrap=True),
-            _cell(ws, r.status, fill=STATUS_FILL.get(r.status)),
+            _cell(ws, r.display_status, fill=status_fill(r)),
             _cell(ws, r.population_n), _cell(ws, lakh(r.population_value), fmt="#,##0.00"),
             _cell(ws, r.n_exceptions if r.executed else None), _cell(ws, r.test.exception_unit),
             _cell(ws, lakh(r.value) if r.executed else None, fmt="#,##0.00"),
-            _cell(ws, unit_summary(r), wrap=True), _cell(ws, r.message, wrap=True),
+            _cell(ws, unit_summary(r), wrap=True), _cell(ws, r.coverage_text(), wrap=True),
+            _cell(ws, r.message, wrap=True),
         ])
 
 
@@ -161,8 +174,18 @@ def _data_quality(wb, run: Run):
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 120
     ws.append([_cell(ws, "Data Quality and Completeness", font=TITLE)])
-    ws.append([_cell(ws, "Reconcile the control totals below with a known figure (trial balance, report footer, "
-                         "annual accounts) before relying on NIL results.", wrap=True)])
+    ws.append([_cell(ws, "A NIL result counts as analytical assurance only when every SAP extract it used is "
+                         "RECONCILED: the row count and total shown by SAP for the report, entered in the window "
+                         "(tab 3) or the profile, agree with what the workbench loaded.", wrap=True)])
+    ws.append([])
+    ws.append([_cell(ws, h, font=BOLD, fill=HEADER_FILL) for h in ("Dataset", "Reconciliation", "Detail")])
+    for st in run.datasets.values():
+        if st.load:
+            ws.append([_cell(ws, st.id), _cell(ws, st.recon_status, fill=RECON_FILL.get(st.recon_status, GREY_FILL)),
+                       _cell(ws, st.recon_note, wrap=True)])
+        if st.integrity:
+            ws.append([_cell(ws, st.id), _cell(ws, "CONFLICT", fill=FLAG_FILL),
+                       _cell(ws, " | ".join(st.integrity), wrap=True)])
     for st in run.datasets.values():
         src = run.profile.datasets.get(st.id)
         if not src and not st.load and not st.error:
@@ -203,6 +226,9 @@ def _data_quality(wb, run: Run):
             _kv(ws, f"Unreadable values: {fname}", f"{sum(counter.values())} values set to empty, e.g. {examples}")
         for w in load.warnings:
             _kv(ws, "WARNING", w)
+        _kv(ws, "Reconciliation to SAP", f"{st.recon_status}: {st.recon_note}")
+        for problem in st.integrity:
+            _kv(ws, "DUPLICATE / OVERLAP", problem)
 
 
 def _parameters(wb, run: Run):
@@ -229,7 +255,9 @@ def _test_sheet(wb, run: Run, r: TestResult):
     t = r.test
     ws.append([_cell(ws, f"{t.id}: {t.title}", font=TITLE)])
     _kv(ws, "Annexure-I topic(s)", "; ".join(_topic_label(run, x) for x in t.topics))
-    _kv(ws, "Status", r.status)
+    _kv(ws, "Status", r.display_status)
+    if r.message:
+        _kv(ws, "Note", r.message)
     _kv(ws, "Rule", t.rule)
     _kv(ws, "Reading the result", t.interpretation)
     if any(run.library.topics[x].approval for x in t.topics):
@@ -243,6 +271,8 @@ def _test_sheet(wb, run: Run, r: TestResult):
     _kv(ws, "Population tested", f"{r.population_n} (value Rs. {lakh(r.population_value)} lakh)"
         if r.population_n is not None else "")
     _kv(ws, "Exceptions", f"{r.n_exceptions} {t.exception_unit}; value involved Rs. {lakh(r.value)} lakh")
+    if r.coverage:
+        _kv(ws, "Coverage", r.coverage_text())
     if r.units:
         _kv(ws, "Concentration", unit_summary(r, top=5))
     _kv(ws, "Questions for the field", "\n".join(f"- {q}" for q in t.field_questions))
@@ -250,7 +280,9 @@ def _test_sheet(wb, run: Run, r: TestResult):
     _kv(ws, "SQL executed", t.sql.strip())
     ws.append([])
     if not r.rows:
-        ws.append([_cell(ws, "No exceptions." if r.status == NIL else r.message, font=BOLD)])
+        ws.append([_cell(ws, ("No exceptions." if r.reconciled else
+                              "No exceptions, but the input is NOT reconciled to SAP control figures: this is not "
+                              "analytical assurance.") if r.status == NIL else r.message, font=BOLD)])
         return
     ws.append([_cell(ws, c, font=BOLD, fill=HEADER_FILL) for c in r.columns])
     money_cols = {i for i, c in enumerate(r.columns)
@@ -325,6 +357,12 @@ def annexure_rows(run: Run) -> list[dict]:
                                        + f" ({r.test.id})" for r in executed)
                 value = "; ".join(f"{lakh(r.value) if r.status == EXCEPTIONS else '-'} ({r.test.id})" for r in executed)
             total_exceptions = sum(r.n_exceptions for r in executed)
+        elif any(r.status == BLOCKED for r in results):
+            data_source, value, total_exceptions = "Remote", None, None
+            exceptions = "Blocked: duplicate / overlapping criteria or master data (see working paper)"
+        elif results and topic.mode != "On-site":
+            data_source, value, total_exceptions = "Remote", None, None
+            exceptions = "Not analysed yet: data or criteria missing"
         else:
             data_source = "On-site"
             exceptions = "To be analysed on-site"
@@ -332,19 +370,27 @@ def annexure_rows(run: Run) -> list[dict]:
             total_exceptions = None
 
         detail = []
+        all_reconciled = all(r.reconciled for r in executed)
         if plan and plan.remarks:
             detail.append(plan.remarks)
+        elif executed and total_exceptions == 0 and all_reconciled:
+            detail.append("No exceptions on input reconciled to SAP control figures: analytical assurance on the "
+                          "process (OO-53 para 7(a))")
         elif executed and total_exceptions == 0:
-            detail.append("No exceptions: analytical assurance on the process (OO-53 para 7(a)), subject to "
-                          "completeness of the extract.")
+            detail.append("No exceptions, but the input is not reconciled to SAP control figures: not analytical "
+                          "assurance until reconciled")
         elif executed:
             conc = "; ".join(unit_summary(r) for r in executed if r.units)
             if conc:
                 detail.append("Exceptions concentrated in " + conc)
+            if not all_reconciled:
+                detail.append("Input not reconciled to SAP control figures: counts and values provisional")
+        elif not results:
+            detail.append(topic.note or "No library test yet; analysis on-site")
         else:
-            reasons = [f"{r.test.id}: {r.message}" for r in results if r.status == NOT_EXECUTABLE]
-            detail.append(topic.note or ("No library test yet; analysis on-site." if not results else ""))
-            detail.extend(reasons)
+            detail.append(topic.note)
+        detail.extend(f"Coverage {r.test.id}: {r.coverage_text()}" for r in executed if r.coverage)
+        detail.extend(f"{r.test.id} {r.status.lower()}: {r.message}" for r in results if not r.executed)
         if topic.approval:
             detail.append("Approvals / sanctions not verifiable remotely (OO-53 para 10).")
 

@@ -10,8 +10,10 @@ never on the office machine. Output: dist/AuditWorkbench_v<version>.zip containi
         Install.bat
         Run Audit Workbench.bat
         auditwb/            the program and its test library
+        profiles/           starter settings (e.g. SAIL CMO 2025-26)
         wheels/             DuckDB and openpyxl for 64-bit Windows, Python 3.11 - 3.14
         docs/README.md      technical notes
+        dev/tests/          regression suite (planted cases and near-misses for every rule)
 """
 
 from __future__ import annotations
@@ -57,6 +59,9 @@ def main():
         (build / name).write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
     (build / "docs").mkdir()
     shutil.copy(ROOT / "README.md", build / "docs" / "README.md")
+    shutil.copytree(ROOT / "profiles", build / "profiles")
+    # Developer regression suite, so DAC can verify the rules independently (python -m pytest dev/tests)
+    shutil.copytree(ROOT / "tests", build / "dev" / "tests", ignore=shutil.ignore_patterns("__pycache__"))
 
     cache = ROOT / "build" / "wheels"
     fetch_wheels(cache, versions)

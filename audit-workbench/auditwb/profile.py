@@ -21,6 +21,8 @@ class DatasetSource:
     columns: dict[str, str] = field(default_factory=dict)
     extracted_on: dt.date | None = None
     sap_report: str = ""
+    control_rows: int | None = None       # row count shown by SAP for the extract
+    control_total: float | None = None    # total of the dataset's control field shown by SAP
 
 
 @dataclass
@@ -92,6 +94,8 @@ def profile_from_dict(raw: dict, path: Path) -> Profile:
             columns=spec.get("columns", {}),
             extracted_on=_date(spec["extracted_on"], f"datasets.{ds_id}.extracted_on") if spec.get("extracted_on") else None,
             sap_report=spec.get("sap_report", ""),
+            control_rows=int(spec["control_rows"]) if spec.get("control_rows") not in (None, "") else None,
+            control_total=float(spec["control_total"]) if spec.get("control_total") not in (None, "") else None,
         )
 
     annex = raw.get("annexure_ii", {})

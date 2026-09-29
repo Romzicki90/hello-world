@@ -72,6 +72,110 @@ def test_settings_saved_from_window_reload_identically(tmp_path):
     assert result.result("PRC-SPLIT-01").n_exceptions == 0   # 10.5 lakh cluster is below 20 lakh
 
 
+def _demo(tmp_path):
+    from auditwb.profile import read_raw
+
+    path = generate(tmp_path / "demo")
+    return path, read_raw(path)
+
+
+def _run_raw(raw, path):
+    from auditwb.profile import profile_from_dict
+
+    return run(profile_from_dict(raw, path), load_library(), progress=lambda *_: None)
+
+
+def test_demo_inputs_are_reconciled(demo_run):
+    for st in demo_run.datasets.values():
+        if st.load:
+            assert st.recon_status in ("RECONCILED", "AUDIT CRITERIA"), (st.id, st.recon_note)
+    assert all(r.reconciled for r in demo_run.results)
+
+
+def test_overlapping_price_criteria_block_the_test(tmp_path):
+    from openpyxl import load_workbook
+
+    path, raw = _demo(tmp_path)
+    xlsx = tmp_path / "demo" / "criteria" / "approved_prices.xlsx"
+    wb = load_workbook(xlsx)
+    wb.active.append(["000000000020000001", "TO", "01.10.2025", "31.03.2026", 48000, "Second circular"])
+    wb.save(xlsx)
+    result = _run_raw(raw, path)
+    r = result.result("SAL-PRICE-01")
+    assert r.status == "BLOCKED"
+    assert "overlapping validity" in r.message
+    assert result.result("SAL-CN-01").status == "EXCEPTIONS"      # other tests unaffected
+
+
+def test_duplicate_master_keys_block_dependent_tests(tmp_path):
+    from openpyxl import load_workbook
+
+    path, raw = _demo(tmp_path)
+    xlsx = tmp_path / "demo" / "extracts" / "KNA1.xlsx"
+    wb = load_workbook(xlsx)
+    wb.active.append(["300009", "Blocked Customer (duplicate row)", "01.04.2015", "X", "01", "", ""])
+    wb.save(xlsx)
+    raw["datasets"]["customer_master"]["control_rows"] += 1
+    result = _run_raw(raw, path)
+    assert result.result("SAL-BLOCKED-01").status == "BLOCKED"
+    assert "duplicate key" in result.result("SAL-BLOCKED-01").message
+
+
+def test_nil_requires_reconciliation(tmp_path):
+    path, raw = _demo(tmp_path)
+    raw["params"]["SAL-AR-01"] = {"overdue_days": 100000}
+    r = _run_raw(raw, path).result("SAL-AR-01")
+    assert r.display_status == "NIL - RECONCILED"
+
+    del raw["datasets"]["customer_items"]["control_rows"]
+    del raw["datasets"]["customer_items"]["control_total"]
+    r = _run_raw(raw, path).result("SAL-AR-01")
+    assert r.display_status == "NIL - NOT RECONCILED"
+
+    raw["datasets"]["customer_items"]["control_rows"] = 61      # SAP shows one row more than loaded
+    raw["datasets"]["customer_items"]["control_total"] = 0
+    result = _run_raw(raw, path)
+    assert result.datasets["customer_items"].recon_status == "DIFFERENCE"
+    assert result.result("SAL-AR-01").display_status == "NIL - NOT RECONCILED"
+    rows = {x["topic"].id: x for x in annexure_rows(result)}
+    assert "not analytical assurance" in rows["T3A08"]["detail"]
+
+
+def test_return_period_needs_the_policy_criterion(tmp_path):
+    path, raw = _demo(tmp_path)
+    del raw["params"]["SAL-RETURN-01"]
+    r = _run_raw(raw, path).result("SAL-RETURN-01")
+    assert r.status == NOT_EXECUTABLE and "max_return_days" in r.message
+
+
+def test_unmapped_column_disables_only_its_check(tmp_path):
+    path, raw = _demo(tmp_path)
+    raw["datasets"]["sales_returns"]["columns"] = {"qc_status": ""}   # 'not in file' chosen in the window
+    r = _run_raw(raw, path).result("SAL-RETURN-02")
+    found = {row[r.columns.index("exception_id")] for row in r.rows}
+    assert "7100000006/10" not in found            # the QC check no longer runs
+    assert "7100000005/10" in found                # the other checks still do
+
+
+def test_self_test_passes():
+    from auditwb.synthetic import self_test
+
+    ok, lines = self_test()
+    assert ok, "\n".join(lines)
+
+
+def test_cmo_starter_profile_loads_and_marks_return_period_as_required(tmp_path):
+    from pathlib import Path
+
+    from auditwb.profile import read_raw
+
+    root = next(p for p in Path(__file__).parents if (p / "profiles").exists())   # repo or release layout
+    path = root / "profiles" / "SAIL_CMO_2025-26.toml"
+    raw = read_raw(path)
+    assert raw["annexure_ii"]["topics"] == ["T3A01", "T3A04", "T3A05", "T3A08"]
+    assert "max_return_days" not in raw["params"]["SAL-RETURN-01"]
+
+
 def test_outputs_are_written(demo_run, tmp_path):
     wp = write_working_paper(demo_run, tmp_path)
     ax = write_annexure_ii(demo_run, tmp_path)

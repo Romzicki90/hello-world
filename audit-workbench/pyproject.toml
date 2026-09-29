@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audit-workbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Offline rule-based analytics on SAP extracts for data-driven compliance audit (OO-53, DGA Steel)"
 requires-python = ">=3.11"
 dependencies = ["duckdb>=1.0", "openpyxl>=3.1"]

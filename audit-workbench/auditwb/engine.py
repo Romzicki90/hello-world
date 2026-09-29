@@ -3,6 +3,15 @@
 Everything happens on this machine: extracts are parsed in Python, written to a
 temporary folder that is deleted afterwards, and queried with an in-memory DuckDB
 database with extension auto-install switched off (no network access is attempted).
+
+Safeguards applied before and after each test:
+  * NOT EXECUTABLE  required data, columns or audit criteria are missing;
+  * BLOCKED         master / criteria data has duplicate keys or overlapping validity
+                    periods, which would double-count exceptions;
+  * reconciliation  a NIL result is analytical assurance only when every SAP extract
+                    it used has been reconciled to the row count / total shown by SAP;
+  * coverage        each test reports how much of its population could be fully
+                    evaluated (e.g. credit notes linked to the original invoice).
 """
 
 from __future__ import annotations
@@ -28,7 +37,14 @@ REQUIRED_RESULT_COLUMNS = ("exception_id", "exception_value", "reason")
 EXCEPTIONS = "EXCEPTIONS"
 NIL = "NIL"
 NOT_EXECUTABLE = "NOT EXECUTABLE"
+BLOCKED = "BLOCKED"
 ERROR = "ERROR"
+
+RECONCILED = "RECONCILED"
+DIFFERENCE = "DIFFERENCE"
+NOT_DONE = "NOT RECONCILED"
+CRITERIA = "AUDIT CRITERIA"
+TOTAL_TOLERANCE = 1.0   # rupees / units; totals must agree to within this
 
 
 @dataclass
@@ -44,10 +60,28 @@ class TestResult:
     population_n: int | None = None
     population_value: float | None = None
     units: list[tuple[str, float]] = field(default_factory=list)
+    coverage: list[tuple[str, int, int]] = field(default_factory=list)
+    reconciled: bool = False
+    unreconciled: list[str] = field(default_factory=list)
 
     @property
     def executed(self) -> bool:
         return self.status in (EXCEPTIONS, NIL)
+
+    @property
+    def display_status(self) -> str:
+        if self.status == NIL:
+            return "NIL - RECONCILED" if self.reconciled else "NIL - NOT RECONCILED"
+        if self.status == EXCEPTIONS and not self.reconciled:
+            return "EXCEPTIONS - input not reconciled"
+        return self.status
+
+    def coverage_text(self) -> str:
+        parts = []
+        for metric, n, of_n in self.coverage:
+            pct = f" ({100 * n / of_n:.1f}%)" if of_n else ""
+            parts.append(f"{metric}: {n:,} of {of_n:,}{pct}")
+        return "; ".join(parts)
 
 
 @dataclass
@@ -58,6 +92,13 @@ class DatasetStatus:
     error: str = ""
     control_totals: dict = field(default_factory=dict)
     date_ranges: dict = field(default_factory=dict)
+    integrity: list[str] = field(default_factory=list)
+    recon_status: str = NOT_DONE
+    recon_note: str = ""
+
+    @property
+    def rows_loaded(self) -> int:
+        return sum(f.rows_loaded for f in self.load.files) if self.load else 0
 
 
 @dataclass
@@ -120,6 +161,74 @@ def _profile_dataset(con, ds_id: str, dataset, mapped: set[str]) -> tuple[dict, 
     return totals, ranges
 
 
+def _examples(rows, limit=5) -> str:
+    return "; ".join(" / ".join("" if v is None else str(v) for v in r) for r in rows[:limit])
+
+
+def check_integrity(con, ds_id: str, dataset, mapped: set[str]) -> list[str]:
+    """Duplicate keys in master data and overlapping validity periods in criteria."""
+    problems = []
+    key = [k for k in dataset.unique if k in mapped]
+    if key and dataset.unique[0] in mapped:
+        cols = ", ".join(f'"{k}"' for k in key)
+        dups = con.execute(f'SELECT {cols}, count(*) AS n FROM "{ds_id}" GROUP BY {cols} HAVING count(*) > 1 '
+                           f'ORDER BY n DESC').fetchall()
+        if dups:
+            problems.append(f"{len(dups)} duplicate key(s) on {' + '.join(key)} (e.g. {_examples(dups)}). "
+                            f"Each {' + '.join(key)} must appear once, otherwise joins double-count.")
+    ov = dataset.no_overlap
+    if ov and ov["key"][0] in mapped:
+        keys = [k for k in ov["key"] if k in mapped]
+        on = " AND ".join(f'a."{k}" IS NOT DISTINCT FROM b."{k}"' for k in keys)
+        f_, t_ = ov["from"], ov["to"]
+        pairs = con.execute(f"""
+            SELECT {", ".join(f'a."{k}"' for k in keys)}, a."{f_}", a."{t_}", b."{f_}", b."{t_}"
+            FROM "{ds_id}" a JOIN "{ds_id}" b ON {on} AND a.rowid < b.rowid
+            WHERE coalesce(a."{f_}", DATE '1900-01-01') <= coalesce(b."{t_}", DATE '9999-12-31')
+              AND coalesce(b."{f_}", DATE '1900-01-01') <= coalesce(a."{t_}", DATE '9999-12-31')
+        """).fetchall()
+        if pairs:
+            problems.append(f"{len(pairs)} pair(s) of records for the same {' + '.join(keys)} with overlapping "
+                            f"validity periods (e.g. {_examples(pairs)}). A transaction would match more than "
+                            f"one criterion record; correct the criteria file.")
+    return problems
+
+
+def reconcile(st: DatasetStatus, dataset, src) -> None:
+    if dataset.criteria:
+        st.recon_status, st.recon_note = CRITERIA, "audit-supplied criteria; check against the source circulars"
+        return
+    rows = st.rows_loaded
+    ctrl = dataset.control_total if dataset.control_total in st.load.mapped_fields else None
+    loaded_total = (st.control_totals.get(ctrl, (None, 0))[0] or 0.0) if ctrl else None
+    if src.control_rows is None and src.control_total is None:
+        st.recon_status = NOT_DONE
+        st.recon_note = (f"SAP row count{' and total of ' + ctrl if ctrl else ''} not entered; "
+                         f"loaded {rows:,} rows" + (f", total {loaded_total:,.2f}" if ctrl else ""))
+        return
+    notes, missing, mismatch = [], False, False
+    if src.control_rows is None:
+        missing = True
+        notes.append("SAP row count not entered")
+    elif src.control_rows != rows:
+        mismatch = True
+        notes.append(f"rows: SAP {src.control_rows:,} vs loaded {rows:,} (difference {rows - src.control_rows:+,})")
+    else:
+        notes.append(f"rows agree ({rows:,})")
+    if ctrl:
+        if src.control_total is None:
+            missing = True
+            notes.append(f"SAP total of {ctrl} not entered")
+        elif abs(loaded_total - src.control_total) > TOTAL_TOLERANCE:
+            mismatch = True
+            notes.append(f"{ctrl}: SAP {src.control_total:,.2f} vs loaded {loaded_total:,.2f} "
+                         f"(difference {loaded_total - src.control_total:+,.2f})")
+        else:
+            notes.append(f"{ctrl} total agrees ({loaded_total:,.2f})")
+    st.recon_status = DIFFERENCE if mismatch else (NOT_DONE if missing else RECONCILED)
+    st.recon_note = "; ".join(notes)
+
+
 def resolve_params(test: Test, profile: Profile) -> dict:
     values = {name: p.default for name, p in test.params.items()}
     common = profile.params.get("common", {})
@@ -149,7 +258,7 @@ def check_executable(test: Test, datasets: dict[str, DatasetStatus], params: dic
     for name, p in test.params.items():
         v = params.get(name)
         if p.required and (v is None or v == [] or v == ""):
-            missing.append(f"parameter '{name}' ({p.label}) must be set in the profile")
+            missing.append(f"parameter '{name}' ({p.label}) must be set (audit criterion)")
     return missing
 
 
@@ -158,20 +267,31 @@ def _run_test(con, test: Test, profile: Profile, datasets) -> TestResult:
     missing = check_executable(test, datasets, params)
     if missing:
         return TestResult(test=test, status=NOT_EXECUTABLE, message="; ".join(missing), params=params)
+    used = [datasets[d] for d in test.datasets if datasets.get(d) and datasets[d].load]
+    conflicts = [f"{st.id}: {p}" for st in used for p in st.integrity]
+    if conflicts:
+        return TestResult(test=test, status=BLOCKED, params=params,
+                          message="Cannot run safely: " + " | ".join(conflicts))
+    unreconciled = [f"{st.id} ({st.recon_status.lower()})" for st in used if st.recon_status not in (RECONCILED, CRITERIA)]
 
     bind = dict(params, period_from=profile.period_from, period_to=profile.period_to,
                 cutoff_date=profile.cutoff_date)
+
+    def execute(sql):
+        return con.execute(sql, {k: bind[k] for k in sql_parameters(sql)})
+
     try:
+        population_n = population_value = None
         if test.population_sql.strip():
-            names = sql_parameters(test.population_sql)
-            pop = con.execute(test.population_sql, {k: bind[k] for k in names}).fetchone()
-            population_n, population_value = (pop[0], pop[1]) if pop else (None, None)
-        else:
-            population_n = population_value = None
-        names = sql_parameters(test.sql)
-        cur = con.execute(test.sql, {k: bind[k] for k in names})
+            pop = execute(test.population_sql).fetchone()
+            if pop:
+                population_n, population_value = pop[0], pop[1]
+        cur = execute(test.sql)
         columns = [d[0] for d in cur.description]
         rows = cur.fetchall()
+        coverage = []
+        if test.coverage_sql.strip():
+            coverage = [(str(m), int(n or 0), int(o or 0)) for m, n, o in execute(test.coverage_sql).fetchall()]
     except duckdb.Error as exc:
         return TestResult(test=test, status=ERROR, message=str(exc).splitlines()[0], params=params)
 
@@ -189,9 +309,13 @@ def _run_test(con, test: Test, profile: Profile, datasets) -> TestResult:
         for r in rows:
             if r[i_unit]:
                 by_unit[r[i_unit]] += float(r[i_val] or 0)
+    message = ""
+    if unreconciled:
+        message = "Input not reconciled to SAP control totals: " + ", ".join(unreconciled)
     return TestResult(
         test=test,
         status=EXCEPTIONS if rows else NIL,
+        message=message,
         params=params,
         columns=columns,
         rows=rows,
@@ -200,6 +324,9 @@ def _run_test(con, test: Test, profile: Profile, datasets) -> TestResult:
         population_n=population_n,
         population_value=float(population_value) if population_value is not None else None,
         units=sorted(by_unit.items(), key=lambda kv: -kv[1]),
+        coverage=coverage,
+        reconciled=not unreconciled,
+        unreconciled=unreconciled,
     )
 
 
@@ -213,8 +340,7 @@ def select_tests(profile: Profile, lib: Library) -> list[Test]:
         unknown = [t for t in profile.topics if t not in lib.topics]
         if unknown:
             raise ValueError(f"profile annexure_ii topics: unknown topic id(s) {', '.join(unknown)}")
-        chosen = [t for t in lib.tests.values() if set(t.topics) & set(profile.topics)]
-        return chosen
+        return [t for t in lib.tests.values() if set(t.topics) & set(profile.topics)]
     return list(lib.tests.values())
 
 
@@ -223,6 +349,7 @@ def run(profile: Profile, lib: Library, progress=print) -> Run:
     tests = select_tests(profile, lib)
     needed = {ds for t in tests for ds in t.datasets} | set(profile.datasets)
     con = _connect()
+    con.execute("CREATE TABLE _mapped (dataset VARCHAR, field VARCHAR)")
     statuses: dict[str, DatasetStatus] = {}
     with tempfile.TemporaryDirectory(prefix="auditwb_") as tmpdir:
         tmp = Path(tmpdir)
@@ -248,7 +375,10 @@ def run(profile: Profile, lib: Library, progress=print) -> Run:
                         st.error = str(exc)
             _create_table(con, ds_id, dataset, rows, tmp)
             if st.load:
+                con.executemany("INSERT INTO _mapped VALUES (?, ?)", [(ds_id, f) for f in sorted(st.load.mapped_fields)])
                 st.control_totals, st.date_ranges = _profile_dataset(con, ds_id, dataset, st.load.mapped_fields)
+                st.integrity = check_integrity(con, ds_id, dataset, st.load.mapped_fields)
+                reconcile(st, dataset, src)
                 st.load.rows = []  # data now lives only in the in-memory database
 
         results = []

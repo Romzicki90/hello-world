@@ -128,10 +128,16 @@ def main(argv=None):
     p = sub.add_parser("init", help="write a blank run profile")
     p.add_argument("path")
     sub.add_parser("gui", help="open the point-and-click window")
+    sub.add_parser("self-test", help="check every rule against the built-in planted cases")
     args = ap.parse_args(argv)
     if args.cmd == "gui":
         from .gui import main as gui_main
         return gui_main()
+    if args.cmd == "self-test":
+        from .synthetic import self_test
+        ok, lines = self_test()
+        print("\n".join(lines))
+        sys.exit(0 if ok else 1)
     lib = load_library()
     {"topics": cmd_topics, "checklist": cmd_checklist, "check": cmd_check, "run": cmd_run,
      "demo": cmd_demo, "init": cmd_init}[args.cmd](args, lib)

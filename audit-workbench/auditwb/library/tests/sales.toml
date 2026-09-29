@@ -1,5 +1,9 @@
 # Analytic tests: Business Process 3, Sales & Revenue Management
 # (conventions: see the header of procurement.toml)
+#
+# Audit unit for sales: Region / Branch (sales office) where the extract has them, else plant.
+# coverage_sql returns rows of (metric, n, of_n): how much of the population could be fully
+# evaluated. It is printed with the result so that the strength of a result is visible.
 
 [[test]]
 id = "SAL-PRICE-01"
@@ -11,20 +15,22 @@ rule = """
 Billing items in the audit period (not cancelled, excluding credit memo / return /
 cancellation types) whose realised price per unit (net value / billed quantity) is lower
 than the approved price valid on the billing date by more than the tolerance %. Value
-involved = (approved price - realised price) x quantity.
+involved = (approved price - realised price) x quantity. The run is BLOCKED if the price
+criteria contain overlapping validity periods for the same material and unit.
 """
 interpretation = """
-Needs the approved price list keyed in by audit (dataset approved_prices); OO-53 para 4
-treats condition-level pricing as on-site, so this test is the remote substitute.
-Check that the net value basis (with / without freight, taxes) matches the basis of the
-approved price.
+A screening test against audit-supplied criteria (dataset approved_prices); OO-53 para 4
+treats condition-level pricing as on-site. A price below the listed price is a red flag,
+not proof of an unauthorised sale: rebates / dispensations within delegated powers are
+legitimate unless the criteria file already reflects the authorised effective price.
+Check that the net value basis (freight, taxes, extras) matches the price basis.
 """
 field_questions = [
-  "Was a discount or a lower price approved for this customer / order? By whom?",
-  "Is the price basis (ex-works / FOR, taxes, freight) the same as the approved price?",
-  "Was the billing price manually changed in the sales order?",
+  "Which listed / approved price applied on the billing date, on what basis (ex-works / FOR)?",
+  "Was a rebate or price dispensation approved? By whom, within the DoP, and before billing?",
+  "Was the price later corrected by a debit note?",
 ]
-records_required = "Price circulars / approvals, sales order and pricing conditions, discount sanctions"
+records_required = "Price circulars / listed prices, DoP for rebates, rebate / dispensation approvals (e-work), branch price-check files, sales order pricing, subsequent DN/CN"
 population_sql = '''
 SELECT count(*) AS n, sum(net_value) AS value
 FROM billing_items
@@ -34,7 +40,7 @@ WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '
 sql = '''
 WITH b AS (
     SELECT billing_doc, billing_item, billing_type, billing_date, customer, material, quantity, unit,
-           net_value, plant, net_value / quantity AS realised_price
+           net_value, plant, branch, region, net_value / quantity AS realised_price
     FROM billing_items
     WHERE billing_date BETWEEN $period_from AND $period_to
       AND coalesce(cancelled, '') = ''
@@ -43,11 +49,11 @@ WITH b AS (
 )
 SELECT concat_ws('/', b.billing_doc, b.billing_item) AS exception_id,
        b.billing_doc, b.billing_item, b.billing_type, b.billing_date, b.customer, b.material,
-       b.quantity, b.unit, b.net_value, round(b.realised_price, 2) AS realised_price,
+       b.region, b.branch, b.quantity, b.unit, b.net_value, round(b.realised_price, 2) AS realised_price,
        a.approved_price, a.valid_from, a.valid_to, a.authority,
        round(100 * (1 - b.realised_price / a.approved_price), 2) AS pct_below_approved,
        (a.approved_price - b.realised_price) * b.quantity AS exception_value,
-       'Plant ' || b.plant AS audit_unit,
+       coalesce(nullif(concat_ws(' / ', 'Region ' || b.region, 'Branch ' || b.branch), ''), 'Plant ' || b.plant) AS audit_unit,
        format('Realised price {} below approved price {}', round(b.realised_price, 2), a.approved_price) AS reason
 FROM b
 JOIN approved_prices a
@@ -57,13 +63,30 @@ JOIN approved_prices a
 WHERE b.realised_price < a.approved_price * (1 - $tolerance_pct / 100.0)
 ORDER BY exception_value DESC
 '''
+coverage_sql = '''
+WITH b AS (
+    SELECT billing_doc, billing_item, material, unit, billing_date
+    FROM billing_items
+    WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '') = ''
+      AND quantity > 0 AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
+)
+SELECT 'Billing items matched to an approved price' AS metric,
+       count(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM approved_prices a
+           WHERE a.material = b.material
+             AND (a.unit IS NULL OR b.unit IS NULL OR upper(a.unit) = upper(b.unit))
+             AND b.billing_date BETWEEN coalesce(a.valid_from, DATE '1900-01-01') AND coalesce(a.valid_to, DATE '9999-12-31'))) AS n,
+       count(*) AS of_n
+FROM b
+'''
 
 [test.params.tolerance_pct]
 label = "Tolerance below approved price, %"
 default = 0
 [test.params.excluded_billing_types]
-label = "Billing types to exclude (credit memos, returns, cancellations)"
+label = "Billing types to exclude (credit / debit memos, returns, cancellations)"
 default = ["G2", "RE", "S1", "S2"]
+help = "SAP standard types. Confirm the company's own billing types."
 
 [[test]]
 id = "SAL-CN-01"
@@ -74,20 +97,25 @@ requires = ["billing_items.billing_doc", "billing_items.billing_type", "billing_
 rule = """
 Credit memos (billing types listed below, not cancelled) dated in the audit period that
 are (a) at or above the minimum value, or (b) issued more than 'days after invoice'
-after the referenced invoice, or (c) more than the stated % of the referenced invoice.
-The number of credit notes to the same customer in the period is shown for each.
+after the original invoice, or (c) more than the stated % of the original invoice.
+The original invoice is taken from the 'original invoice' column where the extract has
+one, otherwise from the reference (preceding) document. The number of credit notes to
+the same customer and the credit-note reason are shown.
 """
 interpretation = """
-In SAP the preceding document of a credit memo is usually the credit memo request, not
-the invoice. Map ref_doc to the original invoice number where your extract has it;
-otherwise only criterion (a) operates.
+A credit note is not an irregularity by itself: provisional-to-final price settlements,
+quality claims and agreed rebates all produce credit notes. Classify by reason before
+concluding. In SAP the preceding document of a credit memo is often the credit-memo
+request, not the invoice; criteria (b) and (c) operate only for credit notes linked to an
+invoice in the extract. The coverage line shows how many were linked.
 """
 field_questions = [
-  "What was the reason for the credit note (quality claim, price revision, discount)?",
+  "What was the reason for the credit note: price settlement, quality claim, return, rebate, error?",
+  "Is the amount consistent with the final price / accepted claim?",
   "Was it approved by the competent authority before issue?",
   "Were the returned goods, if any, actually received back?",
 ]
-records_required = "Credit memo requests and approvals, customer claims, quality reports, returned-goods receipts"
+records_required = "Credit memo requests and approvals (e-work), monthly price-settlement files, customer claims, QC reports, returned-goods receipts, price circulars"
 population_sql = '''
 SELECT count(DISTINCT billing_doc) AS n, sum(abs(net_value)) AS value
 FROM billing_items
@@ -97,54 +125,289 @@ WHERE list_contains($credit_types, billing_type) AND coalesce(cancelled, '') = '
 sql = '''
 WITH invoices AS (
     SELECT billing_doc, min(billing_date) AS invoice_date, sum(net_value) AS invoice_value
-    FROM billing_items GROUP BY billing_doc
+    FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, ''))
+    GROUP BY billing_doc
 ),
 cn AS (
     SELECT billing_doc, any_value(billing_type) AS billing_type, min(billing_date) AS billing_date,
-           any_value(customer) AS customer, any_value(ref_doc) AS ref_doc,
-           sum(abs(net_value)) AS credit_value, any_value(plant) AS plant, any_value(created_by) AS created_by
+           any_value(customer) AS customer, any_value(coalesce(original_invoice, ref_doc)) AS original_invoice,
+           any_value(reason) AS cn_reason, sum(abs(net_value)) AS credit_value, any_value(plant) AS plant,
+           any_value(branch) AS branch, any_value(region) AS region, any_value(created_by) AS created_by
     FROM billing_items
     WHERE list_contains($credit_types, billing_type) AND coalesce(cancelled, '') = ''
       AND billing_date BETWEEN $period_from AND $period_to
     GROUP BY billing_doc
 ),
 j AS (
-    SELECT cn.*, i.invoice_date AS ref_invoice_date, i.invoice_value AS ref_invoice_value,
+    SELECT cn.*, i.invoice_date AS original_invoice_date, i.invoice_value AS original_invoice_value,
            date_diff('day', i.invoice_date, cn.billing_date) AS days_after_invoice,
            count(*) OVER (PARTITION BY cn.customer) AS credit_notes_to_customer
-    FROM cn LEFT JOIN invoices i ON i.billing_doc = cn.ref_doc
+    FROM cn LEFT JOIN invoices i ON i.billing_doc = cn.original_invoice
 )
 SELECT billing_doc AS exception_id,
-       billing_doc, billing_type, billing_date, customer, ref_doc, ref_invoice_date, ref_invoice_value,
-       days_after_invoice, credit_value, credit_notes_to_customer, created_by,
+       billing_doc, billing_type, billing_date, customer, cn_reason, original_invoice, original_invoice_date,
+       original_invoice_value, days_after_invoice, credit_value, credit_notes_to_customer, region, branch,
+       created_by,
        credit_value AS exception_value,
-       'Plant ' || plant AS audit_unit,
+       coalesce(nullif(concat_ws(' / ', 'Region ' || region, 'Branch ' || branch), ''), 'Plant ' || plant) AS audit_unit,
        concat_ws('; ',
            CASE WHEN credit_value >= $min_value THEN 'High-value credit note' END,
            CASE WHEN days_after_invoice > $days_after_invoice
-                THEN format('Issued {} days after the invoice', days_after_invoice) END,
-           CASE WHEN ref_invoice_value > 0 AND credit_value > ref_invoice_value * $pct_of_invoice / 100.0
-                THEN format('Credit is {}% of the invoice', round(100 * credit_value / ref_invoice_value, 1)) END
+                THEN format('Issued {} days after the original invoice', days_after_invoice) END,
+           CASE WHEN original_invoice_value > 0 AND credit_value > original_invoice_value * $pct_of_invoice / 100.0
+                THEN format('Credit is {}% of the original invoice', round(100 * credit_value / original_invoice_value, 1)) END
        ) AS reason
 FROM j
 WHERE credit_value >= $min_value
    OR days_after_invoice > $days_after_invoice
-   OR (ref_invoice_value > 0 AND credit_value > ref_invoice_value * $pct_of_invoice / 100.0)
+   OR (original_invoice_value > 0 AND credit_value > original_invoice_value * $pct_of_invoice / 100.0)
 ORDER BY credit_value DESC
+'''
+coverage_sql = '''
+WITH invoices AS (
+    SELECT DISTINCT billing_doc FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, ''))
+),
+cn AS (
+    SELECT billing_doc, any_value(coalesce(original_invoice, ref_doc)) AS original_invoice, any_value(reason) AS reason
+    FROM billing_items
+    WHERE list_contains($credit_types, billing_type) AND coalesce(cancelled, '') = ''
+      AND billing_date BETWEEN $period_from AND $period_to
+    GROUP BY billing_doc
+)
+SELECT 'Credit notes linked to an original invoice in the extract (tested on all criteria; others on value only)' AS metric,
+       count(*) FILTER (WHERE i.billing_doc IS NOT NULL) AS n, count(*) AS of_n
+FROM cn LEFT JOIN invoices i ON i.billing_doc = cn.original_invoice
+UNION ALL
+SELECT 'Credit notes with a reason recorded', count(*) FILTER (WHERE reason IS NOT NULL), count(*)
+FROM cn
+HAVING EXISTS (SELECT 1 FROM _mapped WHERE dataset = 'billing_items' AND field = 'reason')
 '''
 
 [test.params.credit_types]
 label = "Credit memo billing types"
 default = ["G2", "RE"]
+help = "SAP standard types. Confirm the company's own credit-note types."
 [test.params.min_value]
-label = "High-value credit note at or above, Rs."
+label = "High-value credit note at or above, Rs. (screening threshold)"
 default = 500000
 [test.params.days_after_invoice]
-label = "Issued more than (days) after the invoice"
+label = "Issued more than (days) after the original invoice (screening threshold)"
 default = 90
 [test.params.pct_of_invoice]
-label = "Credit more than (% of invoice)"
+label = "Credit more than (% of original invoice) (screening threshold)"
 default = 25
+
+[[test]]
+id = "SAL-RETURN-01"
+title = "Sales returns beyond the prescribed return period"
+topics = ["T3A05"]
+exception_unit = "return lines"
+requires = ["sales_returns.return_doc", "sales_returns.quantity"]
+requires_any = [["sales_returns.request_date", "sales_returns.receipt_date"], ["sales_returns.sale_date", "sales_returns.original_invoice"]]
+uses = ["billing_items"]
+rule = """
+Return / complaint lines dated in the audit period (complaint date, or receipt date if
+chosen) where the days from the original sale (invoice date in the return file, else the
+billing date of the linked original invoice) exceed the prescribed return period. The
+prescribed period is an audit criterion from the company's approved policy; the test does
+not run until it is entered. Value involved = return value, else returned quantity x
+unit price of the original invoice.
+"""
+interpretation = """
+Returns whose original sale date cannot be determined are not tested; the coverage line
+shows how many. A late return may have been accepted with approval (e.g. latent defect);
+verify the approval and the QC findings.
+"""
+field_questions = [
+  "What is the approved period for lodging complaints / returns, and from which date does it run?",
+  "Why was the return accepted after that period? Who approved it?",
+  "Was the returned material physically received and inspected? What happened to it afterwards?",
+]
+records_required = "Return / complaint policy, customer complaint, QC report and acceptance, return approval (e-work), inward receipt, original invoice / delivery, credit note, resale or disposal records"
+population_sql = '''
+SELECT count(*) AS n, sum(quantity) AS value
+FROM sales_returns
+WHERE coalesce(request_date, receipt_date) BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH inv AS (
+    SELECT billing_doc, min(billing_date) AS invoice_date,
+           sum(quantity) AS invoiced_qty, sum(net_value) AS invoice_value
+    FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, '')) AND coalesce(cancelled, '') = ''
+    GROUP BY billing_doc
+),
+r AS (
+    SELECT s.*,
+           coalesce(s.sale_date, i.invoice_date) AS sold_on,
+           CASE WHEN s.sale_date IS NOT NULL THEN 'return file' WHEN i.invoice_date IS NOT NULL THEN 'original invoice' END AS sale_date_from,
+           CASE WHEN $date_basis = 'receipt_date' THEN coalesce(s.receipt_date, s.request_date)
+                ELSE coalesce(s.request_date, s.receipt_date) END AS returned_on,
+           coalesce(s.return_value, s.quantity * i.invoice_value / nullif(i.invoiced_qty, 0)) AS value_involved
+    FROM sales_returns s LEFT JOIN inv i ON i.billing_doc = s.original_invoice
+)
+SELECT concat_ws('/', return_doc, return_item) AS exception_id,
+       return_doc, return_item, customer, original_invoice, delivery_doc, material, quantity, unit,
+       sold_on, sale_date_from, request_date, receipt_date,
+       date_diff('day', sold_on, returned_on) AS days_after_sale,
+       reason_code, reason_text, qc_status, approval_ref, credit_note, region, branch,
+       value_involved AS exception_value,
+       coalesce(nullif(concat_ws(' / ', 'Region ' || region, 'Branch ' || branch), ''), 'Customer ' || customer) AS audit_unit,
+       format('Returned {} days after the sale (prescribed {} days)', date_diff('day', sold_on, returned_on), $max_return_days) AS reason
+FROM r
+WHERE returned_on BETWEEN $period_from AND $period_to
+  AND sold_on IS NOT NULL
+  AND date_diff('day', sold_on, returned_on) > $max_return_days
+ORDER BY days_after_sale DESC
+'''
+coverage_sql = '''
+WITH inv AS (
+    SELECT DISTINCT billing_doc, billing_date FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, ''))
+)
+SELECT 'Return lines whose original sale date could be determined' AS metric,
+       count(*) FILTER (WHERE s.sale_date IS NOT NULL OR i.billing_doc IS NOT NULL) AS n, count(*) AS of_n
+FROM sales_returns s LEFT JOIN (SELECT billing_doc, min(billing_date) d FROM inv GROUP BY billing_doc) i
+  ON i.billing_doc = s.original_invoice
+WHERE coalesce(s.request_date, s.receipt_date) BETWEEN $period_from AND $period_to
+'''
+
+[test.params.max_return_days]
+label = "Prescribed return / complaint period (days) from the approved policy"
+required = true
+help = "Audit criterion: take it from the company's approved return / quality-complaint policy. No default."
+[test.params.date_basis]
+label = "Return date to use: request_date (complaint date) or receipt_date"
+default = "request_date"
+[test.params.credit_types]
+label = "Credit memo billing types (excluded when finding the original invoice)"
+default = ["G2", "RE"]
+
+[[test]]
+id = "SAL-RETURN-02"
+title = "Sales returns with integrity red flags"
+topics = ["T3A05"]
+exception_unit = "return lines"
+requires = ["sales_returns.return_doc", "sales_returns.quantity"]
+uses = ["billing_items"]
+rule = """
+Return / complaint lines in the audit period with one or more of: (1) no link to an
+original invoice or delivery; (2) total quantity returned against an invoice and material
+exceeding the quantity invoiced; (3) a reason matching the listed risk reasons (wrong
+delivery, wrong specification, excess delivery ...); (4) QC / complaint decision not
+recorded, or recorded as rejected; (5) approval reference not recorded; (6) credit note
+issued but receipt of the returned material not recorded. Each check runs only if the
+columns it needs are in the extract; the Data Quality sheet lists the missing columns.
+"""
+interpretation = """
+These are control red flags on the return process. Wrong-delivery / excess-delivery
+returns point to dispatch control failures and possible diversion (CMO note); missing
+links, QC decisions or receipts point to weak documentation that must be seen in the field.
+"""
+field_questions = [
+  "Is there an original invoice / delivery for the return? Does the returned material match it?",
+  "Why was more returned than was invoiced?",
+  "What caused the wrong / excess delivery, and who bore the freight and handling cost?",
+  "Was the complaint accepted by QC and approved by the competent authority?",
+  "Was the material received back before the credit note was issued? Where is it now?",
+]
+records_required = "Customer complaint, QC report and decision, return approval (e-work), dispatch documents, inward receipt of returned material, credit note, resale / disposal records"
+population_sql = '''
+SELECT count(*) AS n, sum(quantity) AS value
+FROM sales_returns
+WHERE coalesce(request_date, receipt_date) BETWEEN $period_from AND $period_to
+   OR coalesce(request_date, receipt_date) IS NULL
+'''
+sql = '''
+WITH m AS (
+    SELECT bool_or(dataset = 'sales_returns' AND field IN ('original_invoice', 'delivery_doc')) AS has_link,
+           bool_or(dataset = 'sales_returns' AND field = 'qc_status') AS has_qc,
+           bool_or(dataset = 'sales_returns' AND field = 'approval_ref') AS has_approval,
+           bool_or(dataset = 'sales_returns' AND field = 'credit_note') AS has_cn,
+           bool_or(dataset = 'sales_returns' AND field = 'receipt_date') AS has_receipt,
+           bool_or(dataset = 'sales_returns' AND field IN ('reason_code', 'reason_text')) AS has_reason,
+           bool_or(dataset = 'billing_items' AND field = 'quantity') AS has_billing
+    FROM _mapped
+),
+inv AS (
+    SELECT billing_doc, material, sum(quantity) AS invoiced_qty, sum(net_value) AS invoice_value
+    FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, '')) AND coalesce(cancelled, '') = ''
+    GROUP BY billing_doc, material
+),
+returned AS (
+    SELECT original_invoice, material, sum(quantity) AS returned_qty
+    FROM sales_returns WHERE original_invoice IS NOT NULL
+    GROUP BY original_invoice, material
+),
+r AS (
+    SELECT s.*, i.invoiced_qty, t.returned_qty,
+           coalesce(s.return_value, s.quantity * i.invoice_value / nullif(i.invoiced_qty, 0)) AS value_involved,
+           upper(concat_ws(' ', s.reason_code, s.reason_text)) AS reason_upper
+    FROM sales_returns s
+    LEFT JOIN inv i ON i.billing_doc = s.original_invoice AND i.material IS NOT DISTINCT FROM s.material
+    LEFT JOIN returned t ON t.original_invoice = s.original_invoice AND t.material IS NOT DISTINCT FROM s.material
+    WHERE coalesce(s.request_date, s.receipt_date) BETWEEN $period_from AND $period_to
+       OR coalesce(s.request_date, s.receipt_date) IS NULL
+),
+f AS (
+    SELECT r.*,
+        CASE WHEN m.has_link AND r.original_invoice IS NULL AND r.delivery_doc IS NULL
+             THEN 'No link to an original invoice or delivery' END AS f_link,
+        CASE WHEN m.has_billing AND r.invoiced_qty IS NOT NULL AND r.returned_qty > r.invoiced_qty
+             THEN format('Returned {} against invoiced {} (invoice + material)', r.returned_qty, r.invoiced_qty) END AS f_qty,
+        CASE WHEN m.has_reason AND EXISTS (SELECT 1 FROM unnest($risk_reasons) AS w(word)
+                                           WHERE contains(r.reason_upper, upper(w.word)))
+             THEN format('Risk reason: {}', coalesce(r.reason_text, r.reason_code)) END AS f_reason,
+        CASE WHEN m.has_qc AND coalesce(trim(r.qc_status), '') = '' THEN 'QC / complaint decision not recorded'
+             WHEN m.has_qc AND list_contains($qc_rejected_values, upper(trim(r.qc_status)))
+             THEN format('Complaint decision "{}" yet return taken', r.qc_status) END AS f_qc,
+        CASE WHEN m.has_approval AND coalesce(trim(r.approval_ref), '') = ''
+             THEN 'Approval / e-work reference not recorded' END AS f_approval,
+        CASE WHEN m.has_cn AND m.has_receipt AND r.credit_note IS NOT NULL AND r.receipt_date IS NULL
+             THEN 'Credit note issued; receipt of returned material not recorded' END AS f_receipt
+    FROM r CROSS JOIN m
+)
+SELECT concat_ws('/', return_doc, return_item) AS exception_id,
+       return_doc, return_item, customer, original_invoice, delivery_doc, material, quantity, unit,
+       invoiced_qty, returned_qty, request_date, receipt_date, reason_code, reason_text, qc_status,
+       approval_ref, credit_note, region, branch,
+       value_involved AS exception_value,
+       coalesce(nullif(concat_ws(' / ', 'Region ' || region, 'Branch ' || branch), ''), 'Customer ' || customer) AS audit_unit,
+       concat_ws('; ', f_link, f_qty, f_reason, f_qc, f_approval, f_receipt) AS reason
+FROM f
+WHERE coalesce(f_link, f_qty, f_reason, f_qc, f_approval, f_receipt) IS NOT NULL
+ORDER BY exception_value DESC NULLS LAST
+'''
+coverage_sql = '''
+WITH inv AS (
+    SELECT DISTINCT billing_doc FROM billing_items
+    WHERE NOT list_contains($credit_types, coalesce(billing_type, ''))
+),
+s AS (
+    SELECT * FROM sales_returns
+    WHERE coalesce(request_date, receipt_date) BETWEEN $period_from AND $period_to
+       OR coalesce(request_date, receipt_date) IS NULL
+)
+SELECT 'Return lines linked to an invoice in the billing extract (quantity check possible)' AS metric,
+       count(*) FILTER (WHERE i.billing_doc IS NOT NULL) AS n, count(*) AS of_n
+FROM s LEFT JOIN inv i ON i.billing_doc = s.original_invoice
+UNION ALL
+SELECT 'Return lines with a QC / complaint decision recorded', count(*) FILTER (WHERE coalesce(trim(qc_status), '') <> ''), count(*)
+FROM s HAVING EXISTS (SELECT 1 FROM _mapped WHERE dataset = 'sales_returns' AND field = 'qc_status')
+'''
+
+[test.params.risk_reasons]
+label = "Risk reasons (words matched in the reason code / text; screening, from the CMO note)"
+default = ["WRONG DELIVERY", "WRONG SPEC", "EXCESS DELIVERY", "EXCESS SUPPLY", "EXCESS QUANTITY", "DIVERSION"]
+[test.params.qc_rejected_values]
+label = "QC / complaint decisions meaning 'rejected' (upper case)"
+default = ["REJECTED", "NOT ACCEPTED", "DECLINED"]
+[test.params.credit_types]
+label = "Credit memo billing types (excluded when finding the original invoice)"
+default = ["G2", "RE"]
 
 [[test]]
 id = "SAL-AR-01"
@@ -156,18 +419,21 @@ rule = """
 Customer debit items (normal items, no special G/L indicator) posted on or before the
 cut-off and not cleared by the cut-off, overdue by more than 'overdue days'. The due
 date is the SAP net due date; if not in the extract, baseline (or posting) date plus the
-default credit period.
+default credit period. The coverage line shows how many items had the SAP due date.
 """
 interpretation = """
-Overdue receivables may be under dispute, secured by bank guarantee or covered by a
-payment plan; check provisioning and recovery action.
+The overdue threshold and fallback credit period are screening parameters, not the
+company's credit policy; use the SAP net due date wherever possible. Overdue receivables
+may be disputed, secured by bank guarantee or covered by a payment plan; check
+provisioning, penal interest and recovery action.
 """
 field_questions = [
+  "What credit period and limit were sanctioned? Was penal interest due, charged and recovered?",
   "What recovery action has been taken? Is the debt disputed or time-barred?",
   "Were further supplies made to the customer while the dues were outstanding?",
   "Is the security / BG held adequate, and was it invoked?",
 ]
-records_required = "Customer ledger, recovery correspondence, credit approvals, BG register, provisioning note"
+records_required = "Customer ledger, credit sanction and policy, LC / BG register, penal-interest workings, recovery correspondence, provisioning note"
 population_sql = '''
 SELECT count(*) AS n, sum(amount) AS value
 FROM customer_items
@@ -177,7 +443,8 @@ WHERE posting_date <= $cutoff_date AND (clearing_date IS NULL OR clearing_date >
 sql = '''
 WITH o AS (
     SELECT *,
-           coalesce(net_due_date, baseline_date + $default_credit_days, posting_date + $default_credit_days) AS due_date
+           coalesce(net_due_date, baseline_date + $default_credit_days, posting_date + $default_credit_days) AS due_date,
+           CASE WHEN net_due_date IS NOT NULL THEN 'SAP net due date' ELSE 'fallback credit period' END AS due_date_from
     FROM customer_items
     WHERE posting_date <= $cutoff_date
       AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
@@ -186,16 +453,23 @@ WITH o AS (
 )
 SELECT concat_ws('/', company_code, customer, doc_number) AS exception_id,
        company_code, customer, doc_number, doc_type, posting_date, document_date, reference,
-       due_date, date_diff('day', due_date, $cutoff_date) AS days_overdue, amount,
+       due_date, due_date_from, date_diff('day', due_date, $cutoff_date) AS days_overdue, amount,
        amount AS exception_value,
        format('Overdue {} days at cut-off', date_diff('day', due_date, $cutoff_date)) AS reason
 FROM o
 WHERE date_diff('day', due_date, $cutoff_date) > $overdue_days
 ORDER BY amount DESC
 '''
+coverage_sql = '''
+SELECT 'Open items with the SAP net due date (no fallback)' AS metric,
+       count(*) FILTER (WHERE net_due_date IS NOT NULL) AS n, count(*) AS of_n
+FROM customer_items
+WHERE posting_date <= $cutoff_date AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
+  AND coalesce(special_gl, '') = '' AND amount > 0
+'''
 
 [test.params.overdue_days]
-label = "Overdue by more than (days)"
+label = "Overdue by more than (days) (screening threshold)"
 default = 90
 [test.params.default_credit_days]
 label = "Credit period where no due date is available (days)"
@@ -230,7 +504,8 @@ WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '
 sql = '''
 WITH b AS (
     SELECT billing_doc, any_value(billing_type) AS billing_type, min(billing_date) AS billing_date,
-           any_value(customer) AS customer, sum(net_value) AS billed_value, any_value(plant) AS plant
+           any_value(customer) AS customer, sum(net_value) AS billed_value, any_value(plant) AS plant,
+           any_value(branch) AS branch, any_value(region) AS region
     FROM billing_items
     WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '') = ''
       AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
@@ -240,7 +515,7 @@ SELECT b.billing_doc AS exception_id,
        b.billing_doc, b.billing_type, b.billing_date, b.customer, c.customer_name, b.billed_value,
        c.posting_block, c.order_block, c.delivery_block, c.billing_block, c.deletion_flag,
        b.billed_value AS exception_value,
-       'Plant ' || b.plant AS audit_unit,
+       coalesce(nullif(concat_ws(' / ', 'Region ' || b.region, 'Branch ' || b.branch), ''), 'Plant ' || b.plant) AS audit_unit,
        concat_ws('; ',
            CASE WHEN coalesce(c.posting_block, '') <> '' THEN 'posting block' END,
            CASE WHEN coalesce(c.order_block, '') <> '' THEN 'order block' END,
@@ -253,6 +528,13 @@ WHERE coalesce(c.posting_block, '') <> '' OR coalesce(c.order_block, '') <> ''
    OR coalesce(c.delivery_block, '') <> '' OR coalesce(c.billing_block, '') <> ''
    OR coalesce(c.deletion_flag, '') <> ''
 ORDER BY b.billed_value DESC
+'''
+coverage_sql = '''
+SELECT 'Billing documents whose customer is in the customer master extract' AS metric,
+       count(DISTINCT b.billing_doc) FILTER (WHERE c.customer IS NOT NULL) AS n, count(DISTINCT b.billing_doc) AS of_n
+FROM billing_items b LEFT JOIN customer_master c USING (customer)
+WHERE b.billing_date BETWEEN $period_from AND $period_to AND coalesce(b.cancelled, '') = ''
+  AND NOT list_contains($excluded_billing_types, coalesce(b.billing_type, ''))
 '''
 
 [test.params.excluded_billing_types]

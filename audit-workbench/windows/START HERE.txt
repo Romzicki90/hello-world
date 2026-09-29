@@ -36,13 +36,23 @@ EVERY TIME
      1. Audit details  - company, period, cut-off date
      2. Topics         - tick the sixteen Annexure-I topics
      3. SAP files      - choose the exported SAP files; reports marked
-                         NEEDED are required by the ticked topics
+                         NEEDED are required by the ticked topics.
+                         Copy from SAP the row count and the total shown for
+                         each report into the two boxes under it.
+                         If a file's columns are not recognised (common with
+                         Z-reports), press "Columns..." and pick them once.
      4. Settings       - change thresholds only where the company's rules
                          differ (e.g. the DoP / tender limit)
-   Press "Check my files" to see whether the files were read correctly,
-   then press RUN ANALYSIS.
+   Press "Check my files" to see whether the files were read correctly and
+   whether they agree with the SAP row counts / totals, then RUN ANALYSIS.
 
-4. The results folder opens with:
+   Starter settings for SAIL CMO 2025-26 are in the "profiles" folder:
+   "Open saved audit..." and choose SAIL_CMO_2025-26.toml.
+
+4. "Self-test" re-checks every rule on built-in made-up data. Run it once on
+   each new computer; it must say "Self-test passed".
+
+5. The results folder opens with:
      WorkingPaper_....xlsx   evidence for every test
      AnnexureII_....xlsx     the plan in the OO-53 format, pre-filled
      audit_settings.toml     the settings used (open it again next time with
@@ -55,6 +65,12 @@ GOOD TO KNOW
   verified in the field (OO-53 para 10).
 - "NOT EXECUTABLE" means a file, a column or a criterion was missing. It is
   NOT the same as "no exceptions".
-- Check the "Data Quality" sheet of the working paper: row counts and totals
-  should agree with the SAP report before you rely on a "NIL" result.
+- "NIL - NOT RECONCILED" means no exceptions were found, but the SAP row
+  count / total were not entered or did not agree. It is NOT assurance.
+  Only "NIL - RECONCILED" counts as analytical assurance.
+- "BLOCKED" means a criteria or master file has duplicate or overlapping
+  records (e.g. two prices for the same material and date). Correct the
+  file and run again.
+- Each test shows its "coverage", e.g. how many credit notes could be linked
+  to the original invoice. Low coverage means a weaker result.
 - Never email or upload the SAP files or the results outside the office.

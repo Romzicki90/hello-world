@@ -1,0 +1,27 @@
+name: Audit Workbench tests
+
+on:
+  push:
+    paths: ["audit-workbench/**", ".github/workflows/audit-workbench-tests.yml"]
+  pull_request:
+    paths: ["audit-workbench/**", ".github/workflows/audit-workbench-tests.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: audit-workbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install duckdb openpyxl pytest
+      - name: Regression tests (planted exceptions and near-misses for every rule)
+        run: python -m pytest -q
+      - name: Self-test as shipped to audit teams
+        run: python -m auditwb self-test

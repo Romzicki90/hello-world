@@ -1,0 +1,79 @@
+# Starter settings: SAIL Central Marketing Organisation (CMO), FY 2025-26
+# Open in the window with "Open saved audit...", then on tab 3 choose the files the CMO team
+# supplies, enter the SAP row count / total for each, and use "Columns..." for Z-report headings.
+#
+# Topics are the four in the current CMO Annexure-II (Business Process 3 only).
+# Parameters marked CONFIRM are generic software defaults, NOT CMO policy: replace them with the
+# figures in the approved Credit Policy / return policy / DoP, or treat outputs as risk screening.
+
+[audit]
+company = "Steel Authority of India Limited (SAIL)"
+unit = "Central Marketing Organisation (CMO)"
+tier = "A"
+lead_team = "CMO-II"
+period_from = 2025-04-01
+period_to = 2026-03-31
+cutoff_date = 2026-03-31
+
+[sap]
+decimal_notation = "1,234,567.89"
+date_format = "DD.MM.YYYY"
+
+# Which report feeds which dataset (choose the files in the window):
+[datasets.billing_items]
+sap_report = "VF05N all billing items, or ZSDR039A invoices + ZSD095 credit/debit notes (verify ZSD095 vs ZSDR095)"
+
+[datasets.approved_prices]
+sap_report = "Monthly listed prices / pricing circulars, keyed in by audit (one row per material, unit and validity period)"
+
+[datasets.sales_returns]
+sap_report = "ZSDR084 quality complaint / return report"
+
+[datasets.customer_items]
+sap_report = "FBL5N all items as at 31.03.2026 (or ZFIRH013 / ZFIRH117 mapped to the same columns)"
+
+[annexure_ii]
+topics = ["T3A01", "T3A04", "T3A05", "T3A08"]
+fewer_business_processes_reason = "CONFIRM: record the approved justification for limiting the CMO audit to Business Process 3 (specialised marketing unit)."
+
+[annexure_ii.topic.T3A01]
+reason_codes = "C"
+recommend = "Y"
+units = "CMO HO Kolkata, Regions and Branches based on sales volume and dispensation allowed"
+
+[annexure_ii.topic.T3A04]
+reason_codes = "C, P"
+recommend = "Y"
+units = "CMO HO Kolkata, Regions / Branches based on credit-note volume and reasons"
+
+[annexure_ii.topic.T3A05]
+reason_codes = "C, P"
+recommend = "Y"
+units = "CMO HO, Branches / stockyards based on return volume and reasons"
+
+[annexure_ii.topic.T3A08]
+reason_codes = "C, P"
+units = "CMO HO Kolkata / credit-control units"
+
+[params."SAL-PRICE-01"]
+tolerance_pct = 0
+excluded_billing_types = ["G2", "RE", "S1", "S2"]     # CONFIRM CMO billing types
+
+[params."SAL-CN-01"]
+credit_types = ["G2", "RE"]                           # CONFIRM CMO credit-note billing types
+min_value = 500000                                    # screening threshold
+days_after_invoice = 90                               # screening threshold
+pct_of_invoice = 25                                   # screening threshold
+
+[params."SAL-RETURN-01"]
+# max_return_days = ?     REQUIRED: from the approved return / quality-complaint policy. Until it is
+#                         entered, SAL-RETURN-01 reports NOT EXECUTABLE (never NIL).
+date_basis = "request_date"
+credit_types = ["G2", "RE"]                           # CONFIRM
+
+[params."SAL-RETURN-02"]
+credit_types = ["G2", "RE"]                           # CONFIRM
+
+[params."SAL-AR-01"]
+overdue_days = 90                                     # screening threshold, not CMO credit policy
+default_credit_days = 30                              # used only where SAP net due date is missing
