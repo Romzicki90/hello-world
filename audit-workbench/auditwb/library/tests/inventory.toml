@@ -207,6 +207,17 @@ WHERE g.qty_received - coalesce(g.qty_invoiced, 0) > $qty_tolerance
   AND date_diff('day', gr.last_gr_date, $cutoff_date) > $pending_days
 ORDER BY exception_value DESC NULLS LAST
 '''
+coverage_sql = '''
+WITH g AS (
+    SELECT po_number, po_item FROM grir WHERE qty_received - coalesce(qty_invoiced, 0) > $qty_tolerance
+),
+gr AS (
+    SELECT DISTINCT po_number, po_item FROM material_docs WHERE list_contains($gr_movements, movement_type)
+)
+SELECT 'Uninvoiced GR/IR items whose goods-receipt date was found (age determinable)' AS metric,
+       count(gr.po_number) AS n, count(*) AS of_n, 'required' AS kind
+FROM g LEFT JOIN gr ON gr.po_number = g.po_number AND gr.po_item = g.po_item
+'''
 
 [test.params.pending_days]
 label = "Pending beyond (days since last GR)"

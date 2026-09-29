@@ -219,6 +219,20 @@ WHERE coalesce(po.created_on, po.po_date) BETWEEN $period_from AND $period_to
   AND date_diff('day', gr.first_gr_date, coalesce(po.created_on, po.po_date)) > $tolerance_days
 ORDER BY po.po_value DESC
 '''
+coverage_sql = '''
+WITH po AS (
+    SELECT po_number FROM po_items
+    WHERE coalesce(created_on, po_date) BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+    GROUP BY po_number
+),
+gr AS (
+    SELECT DISTINCT po_number FROM material_docs
+    WHERE list_contains($gr_movements, movement_type) AND po_number IS NOT NULL
+)
+SELECT 'POs with a goods receipt found in the material-document extract' AS metric,
+       count(gr.po_number) AS n, count(*) AS of_n, 'nonzero' AS kind
+FROM po LEFT JOIN gr USING (po_number)
+'''
 
 [test.params.gr_movements]
 label = "Goods-receipt movement types"
@@ -577,6 +591,18 @@ WHERE gr.last_gr_date BETWEEN $period_from AND $period_to
   AND coalesce(p.deletion_flag, '') = ''
   AND date_diff('day', p.delivery_date, gr.last_gr_date) > $grace_days
 ORDER BY p.net_value DESC
+'''
+coverage_sql = '''
+WITH p AS (
+    SELECT po_number, po_item FROM po_items
+    WHERE delivery_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+),
+gr AS (
+    SELECT DISTINCT po_number, po_item FROM material_docs WHERE list_contains($gr_movements, movement_type)
+)
+SELECT 'PO items due in the period with a goods receipt found (PO number and item matched)' AS metric,
+       count(gr.po_number) AS n, count(*) AS of_n, 'nonzero' AS kind
+FROM p LEFT JOIN gr ON gr.po_number = p.po_number AND gr.po_item = p.po_item
 '''
 
 [test.params.grace_days]

@@ -331,6 +331,13 @@ WHERE list_contains($auc_classes, a.asset_class)
   AND date_diff('day', coalesce(w.teco_date, w.actual_finish, $cutoff_date), $cutoff_date) > $grace_days
 ORDER BY exception_value DESC
 '''
+coverage_sql = '''
+SELECT 'AuC assets with a WBS link found in the project extract' AS metric,
+       count(w.wbs_element) AS n, count(*) AS of_n, 'required' AS kind
+FROM assets a LEFT JOIN wbs_master w ON w.wbs_element = a.wbs_element
+WHERE list_contains($auc_classes, a.asset_class)
+  AND coalesce(a.book_value, a.acquisition_value, 0) > 0 AND a.deactivation_date IS NULL
+'''
 
 [test.params.grace_days]
 label = "Grace period after TECO (days)"

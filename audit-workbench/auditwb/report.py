@@ -125,8 +125,9 @@ def _cover(wb, run: Run):
         ("Run profile", str(p.path)), ("Run profile SHA-256", sha256_of(p.path)),
         ("Tests run", len(run.results)),
         ("With exceptions", sum(r.status == EXCEPTIONS for r in run.results)),
-        ("Nil exceptions, input reconciled", sum(r.status == NIL and r.reconciled for r in run.results)),
-        ("Nil exceptions, input NOT reconciled", sum(r.status == NIL and not r.reconciled for r in run.results)),
+        ("Nil exceptions, analytical assurance", sum(r.assured for r in run.results)),
+        ("Nil exceptions, NOT assurance (not reconciled / partial coverage)",
+         sum(r.status == NIL and not r.assured for r in run.results)),
         ("Blocked (criteria / master data conflict)", sum(r.status == BLOCKED for r in run.results)),
         ("Not executable / error", sum(not r.executed and r.status != BLOCKED for r in run.results)),
     ]:
@@ -139,8 +140,11 @@ def _cover(wb, run: Run):
         "reproduces these results.")
     _kv(ws, "Status legend",
         "EXCEPTIONS: rule found exceptions. NIL - RECONCILED: rule ran on data reconciled to the SAP row count / "
-        "total and found none (analytical assurance). NIL - NOT RECONCILED: no exceptions, but the input was not "
-        "reconciled to SAP control figures, so it is NOT analytical assurance. BLOCKED: master or criteria data has "
+        "total, the whole population was testable, and it found none (analytical assurance). NIL - NOT "
+        "RECONCILED: no exceptions, but the input was not reconciled to SAP control figures. NIL - PARTIAL "
+        "COVERAGE: no exceptions, but part of the population could not be tested (see Coverage). Neither is "
+        "analytical assurance. Annexure-II gives a topic assurance only if every test for the topic is NIL - "
+        "RECONCILED. A test whose population could not be tested at all is NOT EXECUTABLE. BLOCKED: master or criteria data has "
         "duplicate keys or overlapping validity periods; the test was not run to avoid double counting. "
         "NOT EXECUTABLE: required data, fields or criteria were not available; this is NOT a nil result. "
         "ERROR: the test failed; see the note.")
@@ -348,14 +352,21 @@ def annexure_rows(run: Run) -> list[dict]:
                     if label not in sources:
                         sources.append(label)
             data_source = "; ".join(sources) + "; Remote"
-            if len(executed) == 1:
+
+            def count_text(r):
+                if r.status == NIL:
+                    return "Nil"
+                if r.status == EXCEPTIONS:
+                    return f"{r.n_exceptions} {r.test.exception_unit}"
+                return r.status.capitalize()
+
+            if len(results) == 1:
                 r = executed[0]
-                exceptions = "Nil" if r.status == NIL else f"{r.n_exceptions} {r.test.exception_unit}"
+                exceptions = count_text(r)
                 value = lakh(r.value) if r.status == EXCEPTIONS else None
             else:
-                exceptions = "; ".join(("Nil" if r.status == NIL else f"{r.n_exceptions} {r.test.exception_unit}")
-                                       + f" ({r.test.id})" for r in executed)
-                value = "; ".join(f"{lakh(r.value) if r.status == EXCEPTIONS else '-'} ({r.test.id})" for r in executed)
+                exceptions = "; ".join(f"{count_text(r)} ({r.test.id})" for r in results)
+                value = "; ".join(f"{lakh(r.value) if r.status == EXCEPTIONS else '-'} ({r.test.id})" for r in results)
             total_exceptions = sum(r.n_exceptions for r in executed)
         elif any(r.status == BLOCKED for r in results):
             data_source, value, total_exceptions = "Remote", None, None
@@ -369,28 +380,34 @@ def annexure_rows(run: Run) -> list[dict]:
             value = None
             total_exceptions = None
 
+        # Assurance is decided for the topic as a whole: every library test for the topic must have
+        # run, on reconciled input, with its whole population testable, and found nothing.
+        library_tests = lib.tests_for_topic(tid)
+        not_run = [t.id for t in library_tests if t.id not in {r.test.id for r in results}]
+        topic_assured = bool(library_tests) and not not_run and all(r.assured for r in results)
+        caveats = [c for r in results for c in r.not_assured_reasons()] + [f"{t} not run" for t in not_run]
+
         detail = []
-        all_reconciled = all(r.reconciled for r in executed)
         if plan and plan.remarks:
             detail.append(plan.remarks)
-        elif executed and total_exceptions == 0 and all_reconciled:
-            detail.append("No exceptions on input reconciled to SAP control figures: analytical assurance on the "
-                          "process (OO-53 para 7(a))")
+        if executed and total_exceptions == 0 and topic_assured:
+            detail.append("No exceptions, on input reconciled to SAP control figures, with the whole population "
+                          "testable by every test for this topic: analytical assurance on the process "
+                          "(OO-53 para 7(a))")
         elif executed and total_exceptions == 0:
-            detail.append("No exceptions, but the input is not reconciled to SAP control figures: not analytical "
-                          "assurance until reconciled")
+            detail.append("No exceptions found, but NOT analytical assurance: " + "; ".join(caveats))
         elif executed:
             conc = "; ".join(unit_summary(r) for r in executed if r.units)
             if conc:
                 detail.append("Exceptions concentrated in " + conc)
-            if not all_reconciled:
-                detail.append("Input not reconciled to SAP control figures: counts and values provisional")
+            if caveats:
+                detail.append("Limitations: " + "; ".join(caveats))
         elif not results:
             detail.append(topic.note or "No library test yet; analysis on-site")
         else:
             detail.append(topic.note)
+            detail.extend(caveats)
         detail.extend(f"Coverage {r.test.id}: {r.coverage_text()}" for r in executed if r.coverage)
-        detail.extend(f"{r.test.id} {r.status.lower()}: {r.message}" for r in results if not r.executed)
         if topic.approval:
             detail.append("Approvals / sanctions not verifiable remotely (OO-53 para 10).")
 
@@ -411,6 +428,7 @@ def annexure_rows(run: Run) -> list[dict]:
             "records": records,
             "executed": bool(executed),
             "total_exceptions": total_exceptions,
+            "assured": topic_assured,
         })
     return rows
 

@@ -138,7 +138,69 @@ def test_nil_requires_reconciliation(tmp_path):
     assert result.datasets["customer_items"].recon_status == "DIFFERENCE"
     assert result.result("SAL-AR-01").display_status == "NIL - NOT RECONCILED"
     rows = {x["topic"].id: x for x in annexure_rows(result)}
-    assert "not analytical assurance" in rows["T3A08"]["detail"]
+    assert "not analytical assurance" in rows["T3A08"]["detail"].lower()
+    assert not rows["T3A08"]["assured"]
+
+
+def test_zero_coverage_is_not_executable_not_nil(tmp_path):
+    # Returns carry an invoice number but no sale date, and no billing data to recover it:
+    # not one return can be tested for lateness, so the test must not report NIL.
+    path, raw = _demo(tmp_path)
+    del raw["datasets"]["billing_items"]
+    r = _run_raw(raw, path).result("SAL-RETURN-01")
+    assert r.status == NOT_EXECUTABLE
+    assert "0 of 7" in r.message
+
+
+def test_partial_coverage_nil_is_not_assurance(tmp_path):
+    path, raw = _demo(tmp_path)
+    raw["params"]["SAL-RETURN-01"] = {"max_return_days": 100000}
+    r = _run_raw(raw, path).result("SAL-RETURN-01")
+    assert r.status == "NIL" and r.reconciled
+    assert r.display_status == "NIL - PARTIAL COVERAGE"      # 6 of 7 returns had a determinable sale date
+    assert not r.assured
+
+
+def _only_clean_return(tmp_path, raw):
+    from openpyxl import Workbook, load_workbook
+
+    xlsx = tmp_path / "demo" / "extracts" / "ZSDR084.xlsx"
+    rows = [list(r) for r in load_workbook(xlsx).active.iter_rows(values_only=True)]
+    header = next(r for r in rows if r and r[0] == "Complaint No")
+    clean = next(r for r in rows if r and r[0] == "7100000002")
+    wb = Workbook()
+    wb.active.append(header)
+    wb.active.append(clean)
+    wb.save(xlsx)
+    raw["datasets"]["sales_returns"]["control_rows"] = 1
+    raw["datasets"]["sales_returns"]["control_total"] = clean[header.index("Return Qty")]
+
+
+def test_topic_assurance_needs_every_test_of_the_topic(tmp_path):
+    path, raw = _demo(tmp_path)
+    _only_clean_return(tmp_path, raw)
+
+    del raw["params"]["SAL-RETURN-01"]              # prescribed period not supplied
+    result = _run_raw(raw, path)
+    assert result.result("SAL-RETURN-02").assured     # the integrity checks alone are clean ...
+    assert result.result("SAL-RETURN-01").status == NOT_EXECUTABLE
+    row = {x["topic"].id: x for x in annexure_rows(result)}["T3A05"]
+    assert not row["assured"]                         # ... but the topic is not assured
+    assert "NOT analytical assurance" in row["detail"] and "SAL-RETURN-01" in row["detail"]
+
+    raw["params"]["SAL-RETURN-01"] = {"max_return_days": 60}
+    result = _run_raw(raw, path)
+    row = {x["topic"].id: x for x in annexure_rows(result)}["T3A05"]
+    assert row["assured"] and "analytical assurance on the process" in row["detail"]
+
+
+def test_auditor_remarks_do_not_hide_the_assurance_caveat(tmp_path):
+    path, raw = _demo(tmp_path)
+    _only_clean_return(tmp_path, raw)
+    del raw["params"]["SAL-RETURN-01"]
+    raw["annexure_ii"]["topic"] = {"T3A05": {"remarks": "Returns reviewed; no issues."}}
+    row = {x["topic"].id: x for x in annexure_rows(_run_raw(raw, path))}["T3A05"]
+    assert "Returns reviewed" in row["detail"] and "NOT analytical assurance" in row["detail"]
 
 
 def test_return_period_needs_the_policy_criterion(tmp_path):

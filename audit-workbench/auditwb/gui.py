@@ -716,10 +716,10 @@ class App:
                 lines.append(f"  {r.test.id:<18} {r.display_status:<34} {detail}")
                 if r.coverage:
                     lines.append(f"  {'':<18} coverage: {r.coverage_text()}")
-            nil_unrec = sum(r.status == NIL and not r.reconciled for r in result.results)
+            nil_unrec = sum(r.status == NIL and not r.assured for r in result.results)
             summary = (f"Finished. {sum(r.status == EXCEPTIONS for r in result.results)} tests found exceptions, "
                        f"{sum(r.status == NIL for r in result.results)} found none"
-                       + (f" ({nil_unrec} of them on input NOT reconciled to SAP)" if nil_unrec else "")
+                       + (f" ({nil_unrec} of them NOT assurance: input not reconciled or partial coverage)" if nil_unrec else "")
                        + f", {sum(not r.executed for r in result.results)} could not run or were blocked.")
             self.log_queue.put(("done", out, lines, summary, wp, ax))
         except Exception as exc:

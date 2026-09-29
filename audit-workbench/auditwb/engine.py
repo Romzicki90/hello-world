@@ -46,6 +46,16 @@ NOT_DONE = "NOT RECONCILED"
 CRITERIA = "AUDIT CRITERIA"
 TOTAL_TOLERANCE = 1.0   # rupees / units; totals must agree to within this
 
+# Kinds of coverage measure (4th column of coverage_sql; 'info' if absent):
+#   required  share of the population the rule could evaluate: 0% -> NOT EXECUTABLE,
+#             below 100% -> a NIL is not analytical assurance
+#   check     share for which one of the criteria could be evaluated: below 100% -> not assurance
+#   nonzero   0% means the join / data is unusable -> NOT EXECUTABLE; partial is normal
+#   info      shown only
+COVERAGE_KINDS = {"required", "check", "nonzero", "info"}
+COVERAGE_LIMITS_ASSURANCE = {"required", "check"}
+COVERAGE_ZERO_BLOCKS = {"required", "nonzero"}
+
 
 @dataclass
 class TestResult:
@@ -60,7 +70,7 @@ class TestResult:
     population_n: int | None = None
     population_value: float | None = None
     units: list[tuple[str, float]] = field(default_factory=list)
-    coverage: list[tuple[str, int, int]] = field(default_factory=list)
+    coverage: list[tuple[str, int, int, str]] = field(default_factory=list)
     reconciled: bool = False
     unreconciled: list[str] = field(default_factory=list)
 
@@ -69,18 +79,44 @@ class TestResult:
         return self.status in (EXCEPTIONS, NIL)
 
     @property
+    def partial_coverage(self) -> list[str]:
+        """Coverage measures that fall short of 100% and therefore limit assurance."""
+        return [f"{m}: {n:,} of {o:,}" for m, n, o, kind in self.coverage
+                if kind in COVERAGE_LIMITS_ASSURANCE and n < o]
+
+    @property
+    def assured(self) -> bool:
+        """NIL that counts as analytical assurance: reconciled input and the whole population testable."""
+        return self.status == NIL and self.reconciled and not self.partial_coverage
+
+    @property
     def display_status(self) -> str:
         if self.status == NIL:
-            return "NIL - RECONCILED" if self.reconciled else "NIL - NOT RECONCILED"
-        if self.status == EXCEPTIONS and not self.reconciled:
-            return "EXCEPTIONS - input not reconciled"
+            if not self.reconciled:
+                return "NIL - NOT RECONCILED"
+            return "NIL - PARTIAL COVERAGE" if self.partial_coverage else "NIL - RECONCILED"
+        if self.status == EXCEPTIONS:
+            limits = (["input not reconciled"] if not self.reconciled else []) + \
+                     (["partial coverage"] if self.partial_coverage else [])
+            return "EXCEPTIONS - " + ", ".join(limits) if limits else EXCEPTIONS
         return self.status
+
+    def not_assured_reasons(self) -> list[str]:
+        if self.status != NIL:
+            return [f"{self.test.id} {self.status.lower()}" + (f": {self.message}" if self.message else "")]
+        reasons = []
+        if not self.reconciled:
+            reasons.append(f"{self.test.id}: input not reconciled ({', '.join(self.unreconciled)})")
+        if self.partial_coverage:
+            reasons.append(f"{self.test.id}: partial coverage ({'; '.join(self.partial_coverage)})")
+        return reasons
 
     def coverage_text(self) -> str:
         parts = []
-        for metric, n, of_n in self.coverage:
+        for metric, n, of_n, kind in self.coverage:
             pct = f" ({100 * n / of_n:.1f}%)" if of_n else ""
-            parts.append(f"{metric}: {n:,} of {of_n:,}{pct}")
+            short = " - limits assurance" if kind in COVERAGE_LIMITS_ASSURANCE and n < of_n else ""
+            parts.append(f"{metric}: {n:,} of {of_n:,}{pct}{short}")
         return "; ".join(parts)
 
 
@@ -291,9 +327,19 @@ def _run_test(con, test: Test, profile: Profile, datasets) -> TestResult:
         rows = cur.fetchall()
         coverage = []
         if test.coverage_sql.strip():
-            coverage = [(str(m), int(n or 0), int(o or 0)) for m, n, o in execute(test.coverage_sql).fetchall()]
-    except duckdb.Error as exc:
+            for row in execute(test.coverage_sql).fetchall():
+                kind = str(row[3]) if len(row) > 3 and row[3] else "info"
+                if kind not in COVERAGE_KINDS:
+                    raise ValueError(f"coverage kind {kind!r} is not one of {sorted(COVERAGE_KINDS)}")
+                coverage.append((str(row[0]), int(row[1] or 0), int(row[2] or 0), kind))
+    except (duckdb.Error, ValueError) as exc:
         return TestResult(test=test, status=ERROR, message=str(exc).splitlines()[0], params=params)
+
+    untestable = [f"{m}: 0 of {o:,}" for m, n, o, kind in coverage if kind in COVERAGE_ZERO_BLOCKS and o > 0 and n == 0]
+    if untestable:
+        return TestResult(test=test, status=NOT_EXECUTABLE, params=params, coverage=coverage,
+                          message="No part of the population could be tested (" + "; ".join(untestable) +
+                                  "). Supply the missing data or columns; this is not a NIL result.")
 
     absent = [c for c in REQUIRED_RESULT_COLUMNS if c not in columns]
     if absent:

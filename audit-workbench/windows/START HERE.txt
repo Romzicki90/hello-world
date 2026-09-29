@@ -67,7 +67,10 @@ GOOD TO KNOW
   NOT the same as "no exceptions".
 - "NIL - NOT RECONCILED" means no exceptions were found, but the SAP row
   count / total were not entered or did not agree. It is NOT assurance.
-  Only "NIL - RECONCILED" counts as analytical assurance.
+  "NIL - PARTIAL COVERAGE" means part of the population could not be tested
+  (e.g. returns whose sale date is unknown). It is NOT assurance either.
+  Only "NIL - RECONCILED" counts as analytical assurance, and a topic is
+  assured only if every test for that topic says "NIL - RECONCILED".
 - "BLOCKED" means a criteria or master file has duplicate or overlapping
   records (e.g. two prices for the same material and date). Correct the
   file and run again.

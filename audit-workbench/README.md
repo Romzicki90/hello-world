@@ -37,6 +37,13 @@ result can read the SQL on the test's sheet.
    `NIL - RECONCILED`, which counts as analytical assurance, only if every
    extract it used agrees. Otherwise it shows `NIL - NOT RECONCILED`, and
    Annexure-II says it is not assurance.
+   Coverage also decides assurance. If part of the population could not be
+   evaluated (for example, returns with no determinable sale date), a nil
+   result shows `NIL - PARTIAL COVERAGE`. If none of it could be evaluated,
+   the test is NOT EXECUTABLE. Annexure-II gives a topic analytical
+   assurance only when every library test for that topic is
+   `NIL - RECONCILED`. The team's own remarks are shown alongside this
+   caveat and never replace it.
 6. **Blocked, not double-counted.** Master data must have unique keys (one
    row per vendor, customer, WBS or PO item). Criteria files must not have
    overlapping validity periods (for example, two approved prices for the
@@ -112,7 +119,13 @@ the standard datasets in `auditwb/library/datasets.toml`). The exception query
 must return `exception_id`, `exception_value` and `reason`. It may also
 return `audit_unit`, which feeds the "Units/Departments" column. A test can
 also have a `coverage_sql` that returns rows of `(metric, n, of_n)`, and a
-`uses` list for datasets it joins without requiring them. SQL can check
+`uses` list for datasets it joins without requiring them. A fourth
+coverage column gives the kind of measure:
+- `required`: 0% makes the test NOT EXECUTABLE; under 100% means no
+  assurance.
+- `check`: under 100% means no assurance.
+- `nonzero`: 0% makes the test NOT EXECUTABLE.
+- `info`: shown only. SQL can check
 whether an optional column exists in the extract through the `_mapped`
 table (`dataset`, `field`), so a check never runs on a column that isn't
 there.
