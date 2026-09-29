@@ -62,8 +62,22 @@ def _date(value, name) -> dt.date:
 
 def load_profile(path: Path) -> Profile:
     path = Path(path)
+    return profile_from_dict(read_raw(path), path)
+
+
+def read_raw(path: Path) -> dict:
+    """The profile as a plain dict, with extract file paths made absolute."""
+    path = Path(path)
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    base = path.parent
+    for spec in raw.get("datasets", {}).values():
+        files = spec.pop("file", None)
+        files = spec.get("files") or ([files] if files else [])
+        spec["files"] = [str((path.parent / f).resolve()) for f in files]
+    return raw
+
+
+def profile_from_dict(raw: dict, path: Path) -> Profile:
+    base = Path(path).parent
     audit = raw.get("audit", {})
     sap = raw.get("sap", {})
     period_from = _date(audit.get("period_from"), "audit.period_from")
@@ -103,3 +117,41 @@ def load_profile(path: Path) -> Profile:
         params=raw.get("params", {}),
         fewer_bp_reason=annex.get("fewer_business_processes_reason", ""),
     )
+
+
+# --------------------------------------------------------------------------- writing
+
+def _toml_key(key: str) -> str:
+    return key if key.replace("_", "").isalnum() else '"' + key.replace('"', '\\"') + '"'
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, dt.date):
+        return v.isoformat()
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    s = str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{s}"'
+
+
+def dump_toml(raw: dict, header: str = "") -> str:
+    """Writes a profile dict back as TOML (scalars first, then sub-tables)."""
+    lines = [header] if header else []
+
+    def emit(table: dict, prefix: list[str]):
+        scalars = {k: v for k, v in table.items() if not isinstance(v, dict)}
+        tables = {k: v for k, v in table.items() if isinstance(v, dict)}
+        if prefix and (scalars or not tables):
+            lines.append("")
+            lines.append("[" + ".".join(_toml_key(p) for p in prefix) + "]")
+        for k, v in scalars.items():
+            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
+        for k, v in tables.items():
+            emit(v, prefix + [k])
+
+    emit(raw, [])
+    return "\n".join(lines).strip("\n") + "\n"

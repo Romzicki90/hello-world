@@ -127,7 +127,11 @@ def main(argv=None):
     p.add_argument("dir")
     p = sub.add_parser("init", help="write a blank run profile")
     p.add_argument("path")
+    sub.add_parser("gui", help="open the point-and-click window")
     args = ap.parse_args(argv)
+    if args.cmd == "gui":
+        from .gui import main as gui_main
+        return gui_main()
     lib = load_library()
     {"topics": cmd_topics, "checklist": cmd_checklist, "check": cmd_check, "run": cmd_run,
      "demo": cmd_demo, "init": cmd_init}[args.cmd](args, lib)

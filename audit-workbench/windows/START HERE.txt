@@ -1,0 +1,60 @@
+AUDIT ANALYTICS WORKBENCH - START HERE
+======================================
+
+What this is
+------------
+A program that checks SAP extracts for the Annexure-I audit topics of
+Office Circular No. 53 and prepares the Working Paper and a pre-filled
+Annexure-II in Excel. It works entirely on this computer: no internet,
+nothing is uploaded anywhere.
+
+
+ONE-TIME SETUP (about 5 minutes)
+--------------------------------
+1. Python must be installed on the computer (IT can do this).
+   - Installer: python.org > Downloads > Windows > "Windows installer (64-bit)",
+     version 3.11 or newer. It can be downloaded on any internet computer and
+     copied to the office computer.
+   - Run it with the default options. Ticking "Add python.exe to PATH" is
+     recommended.
+
+2. Copy this whole "AuditWorkbench" folder to the computer, for example to
+   Documents. Keep the folder together; do not move files out of it.
+
+3. Double-click  Install  (once only). A black window shows progress and
+   says "Installation complete". Press any key to close it.
+
+
+EVERY TIME
+----------
+1. Double-click  Run Audit Workbench.
+
+2. First time? Press "Try with demo data", then RUN ANALYSIS. This uses a
+   made-up company so you can see what the results look like.
+
+3. For a real audit, go through the four tabs from left to right:
+     1. Audit details  - company, period, cut-off date
+     2. Topics         - tick the sixteen Annexure-I topics
+     3. SAP files      - choose the exported SAP files; reports marked
+                         NEEDED are required by the ticked topics
+     4. Settings       - change thresholds only where the company's rules
+                         differ (e.g. the DoP / tender limit)
+   Press "Check my files" to see whether the files were read correctly,
+   then press RUN ANALYSIS.
+
+4. The results folder opens with:
+     WorkingPaper_....xlsx   evidence for every test
+     AnnexureII_....xlsx     the plan in the OO-53 format, pre-filled
+     audit_settings.toml     the settings used (open it again next time with
+                             "Open saved audit...")
+
+
+GOOD TO KNOW
+------------
+- Results are red flags, not audit observations. Every exception must be
+  verified in the field (OO-53 para 10).
+- "NOT EXECUTABLE" means a file, a column or a criterion was missing. It is
+  NOT the same as "no exceptions".
+- Check the "Data Quality" sheet of the working paper: row counts and totals
+  should agree with the SAP report before you rely on a "NIL" result.
+- Never email or upload the SAP files or the results outside the office.

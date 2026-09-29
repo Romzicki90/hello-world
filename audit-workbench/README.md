@@ -60,6 +60,15 @@ table downloads work too: columns are recognised by SAP technical names
 
 ## Using it
 
+**Audit teams** use the window. They double-click `Run Audit Workbench` in
+the release folder (built by `python tools/make_release.py`; see
+`windows/START HERE.txt`). The window has four tabs: Audit details,
+Topics, SAP files and Settings. Then they press RUN ANALYSIS. The settings
+are saved next to the results as `audit_settings.toml` and can be reopened
+for the next audit of the same company.
+
+The same things can be done from the command line:
+
 ```
 python -m auditwb topics                      # topics and the tests available for each
 python -m auditwb init moil_2025-26.toml      # blank run profile
@@ -96,24 +105,15 @@ the near-misses.
 
 ## Installing on an office machine with no internet
 
-On any internet-connected machine with Windows 64-bit Python 3.11 or later:
-
-```
-pip download duckdb openpyxl --only-binary=:all: -d wheels
-```
-
-Copy the `audit-workbench` folder and `wheels` through the approved medium,
-then on the office machine:
-
-```
-pip install --no-index --find-links wheels duckdb openpyxl
-cd audit-workbench
-python -m auditwb demo C:\temp\demo
-```
-
-Nothing else is downloaded. The only dependencies are DuckDB and openpyxl.
-A packaged single-folder build that needs no Python installation is planned
-next, subject to IT approval.
+1. On a machine with internet, run `python tools/make_release.py`. This
+   writes `dist/AuditWorkbench_v<version>.zip`, which holds the program,
+   the Windows launchers and the DuckDB/openpyxl wheels for 64-bit Windows
+   Python 3.11 to 3.14.
+2. Copy the zip through the approved medium and unzip it on the office
+   machine. That machine needs Python 3.11 or later from python.org.
+3. Double-click `Install` once. It installs from the bundled `wheels`
+   folder with `pip --no-index`, so nothing is downloaded.
+4. Double-click `Run Audit Workbench`.
 
 ## Known limits of V1
 

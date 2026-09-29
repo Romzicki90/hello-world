@@ -59,6 +59,19 @@ def test_missing_data_is_not_executable_not_nil(tmp_path):
     assert result.result("FIN-SENSGL-01").status == NOT_EXECUTABLE
 
 
+def test_settings_saved_from_window_reload_identically(tmp_path):
+    from auditwb.profile import dump_toml, read_raw
+
+    raw = read_raw(generate(tmp_path / "demo"))
+    raw["params"]["PRC-SPLIT-01"] = {"threshold": 2000000}
+    saved = tmp_path / "saved" / "audit_settings.toml"
+    saved.parent.mkdir()
+    saved.write_text(dump_toml(raw), encoding="utf-8")
+    assert read_raw(saved) == raw
+    result = run(load_profile(saved), load_library(), progress=lambda *_: None)
+    assert result.result("PRC-SPLIT-01").n_exceptions == 0   # 10.5 lakh cluster is below 20 lakh
+
+
 def test_outputs_are_written(demo_run, tmp_path):
     wp = write_working_paper(demo_run, tmp_path)
     ax = write_annexure_ii(demo_run, tmp_path)
