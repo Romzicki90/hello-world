@@ -30,15 +30,21 @@ PYTHON_VERSIONS = ["3.11", "3.12", "3.13", "3.14"]
 PACKAGES = ["duckdb>=1.0", "openpyxl>=3.1"]
 
 
-def fetch_wheels(dest: Path):
+def fetch_wheels(dest: Path, versions: list[str]):
     dest.mkdir(parents=True, exist_ok=True)
-    for version in PYTHON_VERSIONS:
+    for version in versions:
         subprocess.run([sys.executable, "-m", "pip", "download", *PACKAGES, "--only-binary=:all:",
                         "--platform", "win_amd64", "--python-version", version, "--implementation", "cp",
                         "-d", str(dest), "-q"], check=True)
 
 
 def main():
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--python", nargs="+", default=PYTHON_VERSIONS,
+                    help="Windows Python versions to bundle wheels for (fewer = smaller zip)")
+    versions = ap.parse_args().python
     build = ROOT / "build" / "AuditWorkbench"
     if build.exists():
         shutil.rmtree(build)
@@ -53,12 +59,15 @@ def main():
     shutil.copy(ROOT / "README.md", build / "docs" / "README.md")
 
     cache = ROOT / "build" / "wheels"
-    fetch_wheels(cache)
-    shutil.copytree(cache, build / "wheels")
+    fetch_wheels(cache, versions)
+    tags = {f"cp{v.replace('.', '')}" for v in versions}
+    shutil.copytree(cache, build / "wheels", ignore=lambda _d, names: [
+        n for n in names if n.startswith("duckdb-") and not any(f"-{t}-" in n for t in tags)])
 
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
-    target = dist / f"AuditWorkbench_v{__version__}.zip"
+    suffix = "" if versions == PYTHON_VERSIONS else "_py" + "-".join(v.replace(".", "") for v in versions)
+    target = dist / f"AuditWorkbench_v{__version__}{suffix}.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(build.rglob("*")):
             zf.write(path, path.relative_to(build.parent))
