@@ -1,0 +1,260 @@
+# Analytic tests: Business Process 3, Sales & Revenue Management
+# (conventions: see the header of procurement.toml)
+
+[[test]]
+id = "SAL-PRICE-01"
+title = "Sales below the approved price"
+topics = ["T3A01"]
+exception_unit = "billing items"
+requires = ["billing_items.billing_doc", "billing_items.billing_date", "billing_items.material", "billing_items.quantity", "billing_items.net_value", "approved_prices.material", "approved_prices.approved_price"]
+rule = """
+Billing items in the audit period (not cancelled, excluding credit memo / return /
+cancellation types) whose realised price per unit (net value / billed quantity) is lower
+than the approved price valid on the billing date by more than the tolerance %. Value
+involved = (approved price - realised price) x quantity.
+"""
+interpretation = """
+Needs the approved price list keyed in by audit (dataset approved_prices); OO-53 para 4
+treats condition-level pricing as on-site, so this test is the remote substitute.
+Check that the net value basis (with / without freight, taxes) matches the basis of the
+approved price.
+"""
+field_questions = [
+  "Was a discount or a lower price approved for this customer / order? By whom?",
+  "Is the price basis (ex-works / FOR, taxes, freight) the same as the approved price?",
+  "Was the billing price manually changed in the sales order?",
+]
+records_required = "Price circulars / approvals, sales order and pricing conditions, discount sanctions"
+population_sql = '''
+SELECT count(*) AS n, sum(net_value) AS value
+FROM billing_items
+WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '') = ''
+  AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
+'''
+sql = '''
+WITH b AS (
+    SELECT billing_doc, billing_item, billing_type, billing_date, customer, material, quantity, unit,
+           net_value, plant, net_value / quantity AS realised_price
+    FROM billing_items
+    WHERE billing_date BETWEEN $period_from AND $period_to
+      AND coalesce(cancelled, '') = ''
+      AND quantity > 0
+      AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
+)
+SELECT concat_ws('/', b.billing_doc, b.billing_item) AS exception_id,
+       b.billing_doc, b.billing_item, b.billing_type, b.billing_date, b.customer, b.material,
+       b.quantity, b.unit, b.net_value, round(b.realised_price, 2) AS realised_price,
+       a.approved_price, a.valid_from, a.valid_to, a.authority,
+       round(100 * (1 - b.realised_price / a.approved_price), 2) AS pct_below_approved,
+       (a.approved_price - b.realised_price) * b.quantity AS exception_value,
+       'Plant ' || b.plant AS audit_unit,
+       format('Realised price {} below approved price {}', round(b.realised_price, 2), a.approved_price) AS reason
+FROM b
+JOIN approved_prices a
+  ON a.material = b.material
+ AND (a.unit IS NULL OR b.unit IS NULL OR upper(a.unit) = upper(b.unit))
+ AND b.billing_date BETWEEN coalesce(a.valid_from, DATE '1900-01-01') AND coalesce(a.valid_to, DATE '9999-12-31')
+WHERE b.realised_price < a.approved_price * (1 - $tolerance_pct / 100.0)
+ORDER BY exception_value DESC
+'''
+
+[test.params.tolerance_pct]
+label = "Tolerance below approved price, %"
+default = 0
+[test.params.excluded_billing_types]
+label = "Billing types to exclude (credit memos, returns, cancellations)"
+default = ["G2", "RE", "S1", "S2"]
+
+[[test]]
+id = "SAL-CN-01"
+title = "Credit notes issued after sale"
+topics = ["T3A04", "T3B05"]
+exception_unit = "credit notes"
+requires = ["billing_items.billing_doc", "billing_items.billing_type", "billing_items.billing_date", "billing_items.net_value"]
+rule = """
+Credit memos (billing types listed below, not cancelled) dated in the audit period that
+are (a) at or above the minimum value, or (b) issued more than 'days after invoice'
+after the referenced invoice, or (c) more than the stated % of the referenced invoice.
+The number of credit notes to the same customer in the period is shown for each.
+"""
+interpretation = """
+In SAP the preceding document of a credit memo is usually the credit memo request, not
+the invoice. Map ref_doc to the original invoice number where your extract has it;
+otherwise only criterion (a) operates.
+"""
+field_questions = [
+  "What was the reason for the credit note (quality claim, price revision, discount)?",
+  "Was it approved by the competent authority before issue?",
+  "Were the returned goods, if any, actually received back?",
+]
+records_required = "Credit memo requests and approvals, customer claims, quality reports, returned-goods receipts"
+population_sql = '''
+SELECT count(DISTINCT billing_doc) AS n, sum(abs(net_value)) AS value
+FROM billing_items
+WHERE list_contains($credit_types, billing_type) AND coalesce(cancelled, '') = ''
+  AND billing_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH invoices AS (
+    SELECT billing_doc, min(billing_date) AS invoice_date, sum(net_value) AS invoice_value
+    FROM billing_items GROUP BY billing_doc
+),
+cn AS (
+    SELECT billing_doc, any_value(billing_type) AS billing_type, min(billing_date) AS billing_date,
+           any_value(customer) AS customer, any_value(ref_doc) AS ref_doc,
+           sum(abs(net_value)) AS credit_value, any_value(plant) AS plant, any_value(created_by) AS created_by
+    FROM billing_items
+    WHERE list_contains($credit_types, billing_type) AND coalesce(cancelled, '') = ''
+      AND billing_date BETWEEN $period_from AND $period_to
+    GROUP BY billing_doc
+),
+j AS (
+    SELECT cn.*, i.invoice_date AS ref_invoice_date, i.invoice_value AS ref_invoice_value,
+           date_diff('day', i.invoice_date, cn.billing_date) AS days_after_invoice,
+           count(*) OVER (PARTITION BY cn.customer) AS credit_notes_to_customer
+    FROM cn LEFT JOIN invoices i ON i.billing_doc = cn.ref_doc
+)
+SELECT billing_doc AS exception_id,
+       billing_doc, billing_type, billing_date, customer, ref_doc, ref_invoice_date, ref_invoice_value,
+       days_after_invoice, credit_value, credit_notes_to_customer, created_by,
+       credit_value AS exception_value,
+       'Plant ' || plant AS audit_unit,
+       concat_ws('; ',
+           CASE WHEN credit_value >= $min_value THEN 'High-value credit note' END,
+           CASE WHEN days_after_invoice > $days_after_invoice
+                THEN format('Issued {} days after the invoice', days_after_invoice) END,
+           CASE WHEN ref_invoice_value > 0 AND credit_value > ref_invoice_value * $pct_of_invoice / 100.0
+                THEN format('Credit is {}% of the invoice', round(100 * credit_value / ref_invoice_value, 1)) END
+       ) AS reason
+FROM j
+WHERE credit_value >= $min_value
+   OR days_after_invoice > $days_after_invoice
+   OR (ref_invoice_value > 0 AND credit_value > ref_invoice_value * $pct_of_invoice / 100.0)
+ORDER BY credit_value DESC
+'''
+
+[test.params.credit_types]
+label = "Credit memo billing types"
+default = ["G2", "RE"]
+[test.params.min_value]
+label = "High-value credit note at or above, Rs."
+default = 500000
+[test.params.days_after_invoice]
+label = "Issued more than (days) after the invoice"
+default = 90
+[test.params.pct_of_invoice]
+label = "Credit more than (% of invoice)"
+default = 25
+
+[[test]]
+id = "SAL-AR-01"
+title = "Receivables outstanding beyond the credit period"
+topics = ["T3A08"]
+exception_unit = "open items"
+requires = ["customer_items.customer", "customer_items.doc_number", "customer_items.posting_date", "customer_items.amount"]
+rule = """
+Customer debit items (normal items, no special G/L indicator) posted on or before the
+cut-off and not cleared by the cut-off, overdue by more than 'overdue days'. The due
+date is the SAP net due date; if not in the extract, baseline (or posting) date plus the
+default credit period.
+"""
+interpretation = """
+Overdue receivables may be under dispute, secured by bank guarantee or covered by a
+payment plan; check provisioning and recovery action.
+"""
+field_questions = [
+  "What recovery action has been taken? Is the debt disputed or time-barred?",
+  "Were further supplies made to the customer while the dues were outstanding?",
+  "Is the security / BG held adequate, and was it invoked?",
+]
+records_required = "Customer ledger, recovery correspondence, credit approvals, BG register, provisioning note"
+population_sql = '''
+SELECT count(*) AS n, sum(amount) AS value
+FROM customer_items
+WHERE posting_date <= $cutoff_date AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
+  AND coalesce(special_gl, '') = '' AND amount > 0
+'''
+sql = '''
+WITH o AS (
+    SELECT *,
+           coalesce(net_due_date, baseline_date + $default_credit_days, posting_date + $default_credit_days) AS due_date
+    FROM customer_items
+    WHERE posting_date <= $cutoff_date
+      AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
+      AND coalesce(special_gl, '') = ''
+      AND amount > 0
+)
+SELECT concat_ws('/', company_code, customer, doc_number) AS exception_id,
+       company_code, customer, doc_number, doc_type, posting_date, document_date, reference,
+       due_date, date_diff('day', due_date, $cutoff_date) AS days_overdue, amount,
+       amount AS exception_value,
+       format('Overdue {} days at cut-off', date_diff('day', due_date, $cutoff_date)) AS reason
+FROM o
+WHERE date_diff('day', due_date, $cutoff_date) > $overdue_days
+ORDER BY amount DESC
+'''
+
+[test.params.overdue_days]
+label = "Overdue by more than (days)"
+default = 90
+[test.params.default_credit_days]
+label = "Credit period where no due date is available (days)"
+default = 30
+
+[[test]]
+id = "SAL-BLOCKED-01"
+title = "Sales to blocked or deleted customers"
+topics = ["T3A07"]
+exception_unit = "billing documents"
+requires = ["billing_items.billing_doc", "billing_items.billing_date", "billing_items.customer", "billing_items.net_value", "customer_master.customer"]
+rule = """
+Billing documents in the audit period (not cancelled, excluding credit types) to
+customers whose master record carries a posting, order, delivery or billing block, or a
+deletion flag.
+"""
+interpretation = """
+Block flags are the status on the date the customer master was extracted, not on the
+billing date. Confirm the status on the billing date from the change log in the field.
+"""
+field_questions = [
+  "Was the customer blocked on the billing date? Who released the order?",
+  "Why was the customer blocked (credit, dispute, blacklisting)?",
+]
+records_required = "Customer master change log, block / release approvals, sales order release records"
+population_sql = '''
+SELECT count(DISTINCT billing_doc) AS n, sum(net_value) AS value
+FROM billing_items
+WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '') = ''
+  AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
+'''
+sql = '''
+WITH b AS (
+    SELECT billing_doc, any_value(billing_type) AS billing_type, min(billing_date) AS billing_date,
+           any_value(customer) AS customer, sum(net_value) AS billed_value, any_value(plant) AS plant
+    FROM billing_items
+    WHERE billing_date BETWEEN $period_from AND $period_to AND coalesce(cancelled, '') = ''
+      AND NOT list_contains($excluded_billing_types, coalesce(billing_type, ''))
+    GROUP BY billing_doc
+)
+SELECT b.billing_doc AS exception_id,
+       b.billing_doc, b.billing_type, b.billing_date, b.customer, c.customer_name, b.billed_value,
+       c.posting_block, c.order_block, c.delivery_block, c.billing_block, c.deletion_flag,
+       b.billed_value AS exception_value,
+       'Plant ' || b.plant AS audit_unit,
+       concat_ws('; ',
+           CASE WHEN coalesce(c.posting_block, '') <> '' THEN 'posting block' END,
+           CASE WHEN coalesce(c.order_block, '') <> '' THEN 'order block' END,
+           CASE WHEN coalesce(c.delivery_block, '') <> '' THEN 'delivery block' END,
+           CASE WHEN coalesce(c.billing_block, '') <> '' THEN 'billing block' END,
+           CASE WHEN coalesce(c.deletion_flag, '') <> '' THEN 'deletion flag' END
+       ) || ' on customer master (status at extraction)' AS reason
+FROM b JOIN customer_master c USING (customer)
+WHERE coalesce(c.posting_block, '') <> '' OR coalesce(c.order_block, '') <> ''
+   OR coalesce(c.delivery_block, '') <> '' OR coalesce(c.billing_block, '') <> ''
+   OR coalesce(c.deletion_flag, '') <> ''
+ORDER BY b.billed_value DESC
+'''
+
+[test.params.excluded_billing_types]
+label = "Billing types to exclude (credit memos, returns, cancellations)"
+default = ["G2", "RE", "S1", "S2"]

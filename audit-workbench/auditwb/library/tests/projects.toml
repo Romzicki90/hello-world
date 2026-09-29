@@ -1,0 +1,337 @@
+# Analytic tests: Business Process 4, Projects & Capital Expenditure
+# (conventions: see the header of procurement.toml)
+#
+# SAP system status: a WBS element is treated as closed when its system status contains
+# TECO (technically completed) or CLSD (closed); DLFL (deletion flag) is ignored.
+
+[[test]]
+id = "PRJ-COST-01"
+title = "Projects exceeding the approved budget"
+topics = ["T4A02", "T4A01"]
+exception_unit = "WBS elements"
+requires = ["wbs_budget.wbs_element", "wbs_budget.budget", "wbs_budget.actual"]
+rule = """
+WBS elements / projects whose cumulative actual cost (plus commitments, if chosen)
+exceeds the current budget by more than the tolerance %, and, if chosen, elements that
+have actual cost but no budget at all. Value involved = cost considered minus budget.
+"""
+interpretation = """
+Export the budget report at one hierarchy level only (project, or the budget-carrying
+WBS level), otherwise the totals repeat at each level. 'No budget' may mean the budget
+is held at a higher WBS level. A revised cost estimate may have been approved but not
+yet loaded in the ERP.
+"""
+field_questions = [
+  "Was a revised cost estimate approved by the competent authority (Board / CEC)?",
+  "When was the overrun first known and reported?",
+  "What were the reasons: scope change, price escalation, delay?",
+]
+records_required = "Original and revised cost estimates, Board / committee approvals, project monitoring reports"
+population_sql = '''
+SELECT count(*) AS n, sum(actual) AS value FROM wbs_budget
+'''
+sql = '''
+WITH b AS (
+    SELECT wbs_element, budget, actual, commitment,
+           actual + CASE WHEN $include_commitments THEN coalesce(commitment, 0) ELSE 0 END AS cost_considered
+    FROM wbs_budget
+)
+SELECT b.wbs_element AS exception_id,
+       b.wbs_element, w.project, w.description, w.system_status, b.budget, b.actual, b.commitment,
+       b.cost_considered,
+       CASE WHEN coalesce(b.budget, 0) > 0 THEN round(100 * (b.cost_considered / b.budget - 1), 1) END AS pct_over_budget,
+       b.cost_considered - coalesce(b.budget, 0) AS exception_value,
+       'Plant ' || w.plant AS audit_unit,
+       CASE WHEN coalesce(b.budget, 0) = 0 THEN 'Actual cost booked with no budget on the WBS element'
+            ELSE format('Cost exceeds budget by {}%', round(100 * (b.cost_considered / b.budget - 1), 1)) END AS reason
+FROM b LEFT JOIN wbs_master w USING (wbs_element)
+WHERE (coalesce(b.budget, 0) > 0 AND b.cost_considered > b.budget * (1 + $tolerance_pct / 100.0))
+   OR ($flag_unbudgeted AND coalesce(b.budget, 0) = 0 AND b.cost_considered > 0)
+ORDER BY exception_value DESC
+'''
+
+[test.params.tolerance_pct]
+label = "Tolerance over budget, %"
+default = 10
+[test.params.include_commitments]
+label = "Include open commitments"
+default = false
+[test.params.flag_unbudgeted]
+label = "Flag cost booked with no budget"
+default = true
+
+[[test]]
+id = "PRJ-TIME-01"
+title = "Projects exceeding the approved completion date"
+topics = ["T4A03"]
+exception_unit = "WBS elements"
+requires = ["wbs_master.wbs_element", "wbs_master.system_status", "wbs_master.basic_finish"]
+rule = """
+(a) WBS elements not yet technically complete whose basic (approved) finish date is
+more than the grace days before the cut-off, and (b) WBS elements completed during or
+after the audit period whose actual finish / TECO date is more than the grace days after
+the basic finish date. Value involved = cumulative actual cost from the budget report,
+where loaded.
+"""
+interpretation = """
+The basic finish date may have been revised with approval; check the approved schedule.
+Export WBS elements at the level at which schedules are approved to avoid repetition.
+"""
+field_questions = [
+  "What is the approved (and any revised) completion schedule? Who approved revisions?",
+  "What caused the delay? Were LD / penalty clauses against contractors invoked?",
+  "What is the cost and revenue impact of the delay?",
+]
+records_required = "Project approval with schedule, time-extension approvals, contractor LD records, progress reports"
+population_sql = '''
+SELECT count(*) AS n, NULL AS value FROM wbs_master
+'''
+sql = '''
+WITH w AS (
+    SELECT *,
+           regexp_matches(coalesce(system_status, ''), '(^|\s)(TECO|CLSD)(\s|$)') AS is_closed,
+           coalesce(teco_date, actual_finish) AS completed_on
+    FROM wbs_master
+    WHERE NOT regexp_matches(coalesce(system_status, ''), '(^|\s)DLFL(\s|$)')
+      AND basic_finish IS NOT NULL
+),
+d AS (
+    SELECT *,
+           CASE WHEN is_closed THEN date_diff('day', basic_finish, completed_on)
+                ELSE date_diff('day', basic_finish, $cutoff_date) END AS days_delay
+    FROM w
+    WHERE NOT is_closed OR completed_on >= $period_from
+)
+SELECT d.wbs_element AS exception_id,
+       d.wbs_element, d.project, d.description, d.system_status, d.basic_start, d.basic_finish,
+       d.forecast_finish, d.actual_finish, d.teco_date, d.days_delay, b.actual AS actual_cost,
+       b.actual AS exception_value,
+       'Plant ' || d.plant AS audit_unit,
+       CASE WHEN d.is_closed THEN format('Completed {} days after the basic finish date', d.days_delay)
+            ELSE format('Not technically complete; {} days past the basic finish date at cut-off', d.days_delay) END AS reason
+FROM d LEFT JOIN wbs_budget b USING (wbs_element)
+WHERE d.days_delay > $grace_days
+ORDER BY d.days_delay DESC
+'''
+
+[test.params.grace_days]
+label = "Grace period (days)"
+default = 0
+
+[[test]]
+id = "PRJ-POSTCLOSE-01"
+title = "Capital expenditure booked after project closure"
+topics = ["T4A05"]
+exception_unit = "WBS elements"
+requires = ["wbs_master.wbs_element", "wbs_master.system_status", "wbs_costs.wbs_element", "wbs_costs.posting_date", "wbs_costs.amount"]
+requires_any = [["wbs_master.teco_date", "wbs_master.actual_finish"]]
+rule = """
+Actual cost line items posted in the audit period to WBS elements whose status is TECO
+or CLSD, where the posting date is more than the grace days after the TECO / actual
+finish date. One exception per WBS element; each line item is listed.
+"""
+interpretation = """
+Some postings after TECO are legitimate (final bills, retention release, settlement,
+reversal). Postings of new expenditure after closure indicate weak closure control.
+"""
+field_questions = [
+  "What was the nature of the expenditure booked after closure?",
+  "Who re-opened / allowed posting on the closed project, and why?",
+  "Was the expenditure capitalised to the right asset?",
+]
+records_required = "Project closure note, TECO approval, documents for each post-closure posting, settlement rules"
+population_sql = '''
+SELECT count(DISTINCT wbs_element) AS n, sum(amount) AS value
+FROM wbs_costs WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH w AS (
+    SELECT wbs_element, project, description, system_status, plant,
+           coalesce(teco_date, actual_finish) AS closed_on
+    FROM wbs_master
+    WHERE regexp_matches(coalesce(system_status, ''), '(^|\s)(TECO|CLSD)(\s|$)')
+      AND coalesce(teco_date, actual_finish) IS NOT NULL
+)
+SELECT c.wbs_element AS exception_id,
+       c.wbs_element, w.project, w.description, w.system_status, w.closed_on,
+       c.doc_number, c.ref_doc, c.posting_date, c.cost_element, c.amount, c.vendor, c.user_name, c.text,
+       date_diff('day', w.closed_on, c.posting_date) AS days_after_closure,
+       c.amount AS exception_value,
+       'Plant ' || w.plant AS audit_unit,
+       format('Posted {} days after TECO / finish date {}', date_diff('day', w.closed_on, c.posting_date), w.closed_on) AS reason
+FROM wbs_costs c JOIN w USING (wbs_element)
+WHERE c.posting_date BETWEEN $period_from AND $period_to
+  AND date_diff('day', w.closed_on, c.posting_date) > $grace_days
+  AND coalesce(c.amount, 0) <> 0
+ORDER BY c.wbs_element, c.posting_date
+'''
+
+[test.params.grace_days]
+label = "Grace period after closure (days)"
+default = 0
+
+[[test]]
+id = "PRJ-IDLE-01"
+title = "Projects inactive despite expenditure"
+topics = ["T4A08"]
+exception_unit = "WBS elements"
+requires = ["wbs_master.wbs_element", "wbs_master.system_status", "wbs_costs.wbs_element", "wbs_costs.posting_date", "wbs_costs.amount"]
+rule = """
+Open WBS elements (not TECO / CLSD / DLFL) with cumulative cost at or above the minimum
+(from the budget report where loaded, else from the cost line items) and no cost posting
+in the last 'idle days' before the cut-off.
+"""
+interpretation = """
+If the cost line-item extract covers only the audit year, 'no posting in extract' means
+no posting since the extract start date; the reason column says so.
+"""
+field_questions = [
+  "Is the project stalled, abandoned or awaiting a decision? Since when?",
+  "Is the expenditure incurred still useful? Has impairment been considered?",
+]
+records_required = "Project status reports, Board / management decisions on the project, impairment review"
+population_sql = '''
+SELECT count(*) AS n, NULL AS value FROM wbs_master
+WHERE NOT regexp_matches(coalesce(system_status, ''), '(^|\s)(TECO|CLSD|DLFL)(\s|$)')
+'''
+sql = '''
+WITH coverage AS (
+    SELECT min(posting_date) AS extract_from FROM wbs_costs
+),
+c AS (
+    SELECT wbs_element, sum(amount) AS cost_in_extract, max(posting_date) AS last_posting
+    FROM wbs_costs WHERE posting_date <= $cutoff_date GROUP BY wbs_element
+),
+w AS (
+    SELECT * FROM wbs_master
+    WHERE NOT regexp_matches(coalesce(system_status, ''), '(^|\s)(TECO|CLSD|DLFL)(\s|$)')
+),
+j AS (
+    SELECT w.wbs_element, w.project, w.description, w.system_status, w.plant,
+           coalesce(b.actual, c.cost_in_extract) AS cumulative_cost, c.last_posting
+    FROM w
+    LEFT JOIN c USING (wbs_element)
+    LEFT JOIN wbs_budget b USING (wbs_element)
+)
+SELECT j.wbs_element AS exception_id,
+       j.wbs_element, j.project, j.description, j.system_status, j.cumulative_cost, j.last_posting,
+       date_diff('day', j.last_posting, $cutoff_date) AS days_since_last_posting,
+       j.cumulative_cost AS exception_value,
+       'Plant ' || j.plant AS audit_unit,
+       CASE WHEN j.last_posting IS NULL THEN format('No cost posting in the extract (extract starts {})', cov.extract_from)
+            ELSE format('No cost posting for {} days before cut-off', date_diff('day', j.last_posting, $cutoff_date)) END AS reason
+FROM j CROSS JOIN coverage cov
+WHERE j.cumulative_cost >= $min_cost
+  AND (j.last_posting IS NULL OR date_diff('day', j.last_posting, $cutoff_date) > $idle_days)
+ORDER BY j.cumulative_cost DESC
+'''
+
+[test.params.idle_days]
+label = "No posting for more than (days)"
+default = 180
+[test.params.min_cost]
+label = "Minimum cumulative cost, Rs."
+default = 10000000
+
+[[test]]
+id = "PRJ-CWIP-01"
+title = "Long-pending capital work-in-progress (assets under construction)"
+topics = ["T4A04"]
+exception_unit = "AuC assets"
+requires = ["assets.asset", "assets.asset_class"]
+requires_any = [["assets.first_acq_date", "assets.capitalized_on"], ["assets.book_value", "assets.acquisition_value"]]
+rule = """
+Assets in the Assets-under-Construction classes listed below with a positive balance at
+the cut-off whose first acquisition date is more than 'minimum years' before the
+cut-off. Ageing bucket shown: 2-5, 5-10, over 10 years.
+"""
+interpretation = """
+Set the AuC asset classes used by the company (SAP's model chart uses 4000 but each
+company configures its own). Long-pending CWIP may be a stalled project or a completed
+asset not capitalised (depreciation understated).
+"""
+field_questions = [
+  "Is the asset in use? If so, why has it not been capitalised?",
+  "Is the project stalled? Has impairment been considered?",
+]
+records_required = "Project completion / commissioning certificates, capitalisation notes, CWIP ageing schedule in the accounts"
+population_sql = '''
+SELECT count(*) AS n, sum(coalesce(book_value, acquisition_value)) AS value
+FROM assets WHERE list_contains($auc_classes, asset_class)
+'''
+sql = '''
+WITH a AS (
+    SELECT *, coalesce(first_acq_date, capitalized_on) AS since,
+           coalesce(book_value, acquisition_value) AS balance,
+           date_diff('day', coalesce(first_acq_date, capitalized_on), $cutoff_date) / 365.25 AS age_years
+    FROM assets
+    WHERE list_contains($auc_classes, asset_class) AND deactivation_date IS NULL
+)
+SELECT concat_ws('-', asset, sub_number) AS exception_id,
+       asset, sub_number, asset_class, description, since, round(age_years, 1) AS age_years,
+       CASE WHEN age_years > 10 THEN 'over 10 years' WHEN age_years > 5 THEN '5 to 10 years'
+            ELSE format('{} to 5 years', $min_years) END AS ageing_bucket,
+       acquisition_value, book_value, wbs_element,
+       balance AS exception_value,
+       'Plant ' || plant AS audit_unit,
+       format('Under construction for {} years', round(age_years, 1)) AS reason
+FROM a
+WHERE coalesce(balance, 0) > 0 AND age_years > $min_years
+ORDER BY balance DESC
+'''
+
+[test.params.min_years]
+label = "Pending for more than (years)"
+default = 2
+[test.params.auc_classes]
+label = "Asset classes for Assets under Construction"
+default = ["4000"]
+help = "Confirm with the company's asset class configuration (OAOA / asset class list)."
+
+[[test]]
+id = "PRJ-TECOCWIP-01"
+title = "Completed projects still carrying CWIP"
+topics = ["T4A07", "T8A01"]
+exception_unit = "AuC assets"
+requires = ["assets.asset", "assets.asset_class", "assets.wbs_element", "wbs_master.wbs_element", "wbs_master.system_status"]
+requires_any = [["assets.book_value", "assets.acquisition_value"]]
+rule = """
+Assets-under-Construction with a positive balance whose linked WBS element has status
+TECO or CLSD, and whose TECO / finish date is more than the grace days before the cut-off.
+"""
+interpretation = """
+Once a project is technically complete, the AuC should be settled to final assets and
+depreciation started. The WBS link must be in the external WBS format in both extracts.
+"""
+field_questions = [
+  "When was the asset put to use? Why was the AuC not settled?",
+  "What depreciation has been missed as a result?",
+]
+records_required = "Commissioning certificate, settlement rule / AIAB-AIBU run logs, capitalisation notes"
+population_sql = '''
+SELECT count(*) AS n, sum(coalesce(book_value, acquisition_value)) AS value
+FROM assets WHERE list_contains($auc_classes, asset_class)
+'''
+sql = '''
+SELECT concat_ws('-', a.asset, a.sub_number) AS exception_id,
+       a.asset, a.sub_number, a.asset_class, a.description, a.wbs_element,
+       w.system_status, coalesce(w.teco_date, w.actual_finish) AS completed_on,
+       a.acquisition_value, a.book_value,
+       coalesce(a.book_value, a.acquisition_value) AS exception_value,
+       'Plant ' || coalesce(a.plant, w.plant) AS audit_unit,
+       format('Linked WBS {} is technically complete (status {}) but AuC balance remains', a.wbs_element, w.system_status) AS reason
+FROM assets a JOIN wbs_master w ON w.wbs_element = a.wbs_element
+WHERE list_contains($auc_classes, a.asset_class)
+  AND coalesce(a.book_value, a.acquisition_value, 0) > 0
+  AND a.deactivation_date IS NULL
+  AND regexp_matches(coalesce(w.system_status, ''), '(^|\s)(TECO|CLSD)(\s|$)')
+  AND date_diff('day', coalesce(w.teco_date, w.actual_finish, $cutoff_date), $cutoff_date) > $grace_days
+ORDER BY exception_value DESC
+'''
+
+[test.params.grace_days]
+label = "Grace period after TECO (days)"
+default = 90
+[test.params.auc_classes]
+label = "Asset classes for Assets under Construction"
+default = ["4000"]

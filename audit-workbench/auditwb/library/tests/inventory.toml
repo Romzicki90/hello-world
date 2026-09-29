@@ -1,0 +1,219 @@
+# Analytic tests: Business Process 2, Inventory & Materials Management
+# (conventions: see the header of procurement.toml)
+
+[[test]]
+id = "INV-NEG-01"
+title = "Negative stock"
+topics = ["T2A01"]
+exception_unit = "stock lines"
+requires = ["stock.material", "stock.unrestricted_qty"]
+rule = """
+Material / plant / storage-location lines in the stock snapshot with negative
+unrestricted quantity or negative stock value.
+"""
+interpretation = """
+Negative stock is possible only where the company has allowed it in configuration; it
+means issues were posted before receipts (back-dated or post-facto receipts).
+"""
+field_questions = [
+  "Why was the issue posted before the receipt?",
+  "Who authorised negative stock for this plant / storage location, and why?",
+  "Were the issued materials actually available physically?",
+]
+records_required = "Issue slips / reservations, GRNs posted later, configuration approval for negative stock"
+population_sql = '''
+SELECT count(*) AS n, sum(stock_value) AS value FROM stock
+'''
+sql = '''
+SELECT concat_ws('|', material, plant, storage_location) AS exception_id,
+       material, material_desc, plant, storage_location, unrestricted_qty, unit, stock_value,
+       abs(coalesce(stock_value, 0)) AS exception_value,
+       'Plant ' || plant AS audit_unit,
+       CASE WHEN unrestricted_qty < 0 THEN format('Negative unrestricted quantity {}', unrestricted_qty)
+            ELSE format('Negative stock value {}', round(stock_value, 2)) END AS reason
+FROM stock
+WHERE unrestricted_qty < 0 OR stock_value < 0
+ORDER BY exception_value DESC
+'''
+
+[[test]]
+id = "INV-NONMOV-01"
+title = "Non-moving / slow-moving high-value inventory"
+topics = ["T2A02", "T2A08"]
+exception_unit = "materials"
+requires = ["stock.material", "stock.unrestricted_qty", "stock.stock_value", "material_docs.material", "material_docs.movement_type", "material_docs.posting_date"]
+rule = """
+Materials (per plant) with positive stock of at least the minimum value at the cut-off
+and no issue / consumption movement (types listed below) in the last 'non-moving days'
+before the cut-off. Where the material-document extract has no issue at all, the reason
+states the date from which the extract starts.
+"""
+interpretation = """
+The test is only as long as the material-document extract: to test 2-year non-moving
+stock, extract MB51 for at least 2 years. Insurance / critical spares may be held
+deliberately; check the company's inventory norms.
+"""
+field_questions = [
+  "Is the material a declared insurance / critical spare?",
+  "Why was it procured, and is there any future requirement?",
+  "Has a disposal / surplus declaration been considered?",
+]
+records_required = "Inventory norms, non-moving inventory review reports, procurement file of the material, surplus declarations"
+population_sql = '''
+SELECT count(*) AS n, sum(stock_value) AS value FROM stock WHERE unrestricted_qty > 0
+'''
+sql = '''
+WITH coverage AS (
+    SELECT min(posting_date) AS extract_from FROM material_docs
+),
+last_issue AS (
+    SELECT material, plant, max(posting_date) AS last_issue_date
+    FROM material_docs
+    WHERE list_contains($issue_movements, movement_type) AND posting_date <= $cutoff_date
+    GROUP BY material, plant
+),
+s AS (
+    SELECT material, plant, any_value(material_desc) AS material_desc,
+           sum(unrestricted_qty) AS stock_qty, any_value(unit) AS unit, sum(stock_value) AS stock_value
+    FROM stock
+    GROUP BY material, plant
+)
+SELECT concat_ws('|', s.material, s.plant) AS exception_id,
+       s.material, s.material_desc, s.plant, s.stock_qty, s.unit, s.stock_value,
+       l.last_issue_date,
+       date_diff('day', l.last_issue_date, $cutoff_date) AS days_since_last_issue,
+       s.stock_value AS exception_value,
+       'Plant ' || s.plant AS audit_unit,
+       CASE WHEN l.last_issue_date IS NULL
+            THEN format('No issue movement in the extract (extract starts {})', c.extract_from)
+            ELSE format('Last issue on {}, {} days before cut-off', l.last_issue_date,
+                        date_diff('day', l.last_issue_date, $cutoff_date)) END AS reason
+FROM s
+LEFT JOIN last_issue l ON l.material = s.material AND l.plant IS NOT DISTINCT FROM s.plant
+CROSS JOIN coverage c
+WHERE s.stock_qty > 0
+  AND s.stock_value >= $min_value
+  AND (l.last_issue_date IS NULL OR date_diff('day', l.last_issue_date, $cutoff_date) > $nonmoving_days)
+ORDER BY s.stock_value DESC
+'''
+
+[test.params.nonmoving_days]
+label = "No issue for more than (days)"
+default = 365
+[test.params.min_value]
+label = "Minimum stock value, Rs."
+default = 100000
+[test.params.issue_movements]
+label = "Issue / consumption movement types"
+default = ["201", "221", "231", "241", "261", "281", "291", "601", "641", "643"]
+help = "Standard SAP consumption movement types. Add the company's Z-movement types if used."
+
+[[test]]
+id = "INV-MANADJ-01"
+title = "Manual stock adjustments, inventory differences and write-offs"
+topics = ["T2A05", "T2A06", "T2B03"]
+exception_unit = "material document items"
+requires = ["material_docs.mat_doc", "material_docs.movement_type", "material_docs.posting_date", "material_docs.amount"]
+rule = """
+Goods movements in the audit period of the adjustment movement types listed below
+(physical-inventory differences 70x/71x, scrapping 55x, initial entry / manual stock
+correction 56x, receipts without PO 50x) with value at or above the minimum.
+"""
+interpretation = """
+These movements bypass the normal procurement / issue cycle. Each needs an approval
+(physical verification board, write-off sanction, disposal approval) that is not visible
+remotely (OO-53 para 10).
+"""
+field_questions = [
+  "Is there an approved physical-verification report / write-off sanction for the movement?",
+  "Was the authority competent under the DoP for the value written off?",
+  "Why was a receipt posted without a purchase order?",
+]
+records_required = "Physical verification reports, write-off / scrap sanctions, disposal approvals, stock-correction note-sheets"
+population_sql = '''
+SELECT count(*) AS n, sum(abs(amount)) AS value
+FROM material_docs WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+SELECT concat_ws('/', mat_doc, mat_doc_item) AS exception_id,
+       mat_doc, mat_doc_item, movement_type,
+       CASE WHEN movement_type SIMILAR TO '7[01][0-9]' THEN 'Physical inventory difference'
+            WHEN movement_type SIMILAR TO '55[0-9]' THEN 'Scrapping / write-off'
+            WHEN movement_type SIMILAR TO '56[0-9]' THEN 'Initial entry / manual stock correction'
+            WHEN movement_type SIMILAR TO '50[0-9]' THEN 'Receipt without purchase order'
+            ELSE 'Other adjustment type (as configured)' END AS category,
+       posting_date, entry_date, material, material_desc, plant, storage_location,
+       quantity, unit, amount, user_name, reference,
+       abs(amount) AS exception_value,
+       'Plant ' || plant AS audit_unit,
+       format('Movement type {} of {}', movement_type, round(amount, 2)) AS reason
+FROM material_docs
+WHERE list_contains($adjustment_movements, movement_type)
+  AND posting_date BETWEEN $period_from AND $period_to
+  AND abs(coalesce(amount, 0)) >= $min_value
+ORDER BY exception_value DESC
+'''
+
+[test.params.min_value]
+label = "Minimum value, Rs."
+default = 100000
+[test.params.adjustment_movements]
+label = "Adjustment movement types"
+default = ["501", "502", "551", "552", "553", "554", "555", "556", "561", "562", "701", "702", "711", "712"]
+
+[[test]]
+id = "INV-GRNI-01"
+title = "Goods received but not invoiced for long"
+topics = ["T2A07"]
+exception_unit = "PO items"
+requires = ["grir.po_number", "grir.po_item", "grir.qty_received", "grir.qty_invoiced", "material_docs.po_number", "material_docs.po_item", "material_docs.movement_type", "material_docs.posting_date"]
+rule = """
+PO items where quantity received exceeds quantity invoiced by more than the tolerance,
+and the last goods receipt was posted more than 'pending days' before the cut-off.
+"""
+interpretation = """
+Long-pending GR/IR balances can mean unsettled vendor liabilities, disputed supplies
+or wrong GR postings, and can overstate stock and liabilities.
+"""
+field_questions = [
+  "Why has the vendor's invoice not been received / booked?",
+  "Is the supply disputed or rejected? Was the GR reversed where needed?",
+  "Is the GR/IR clearing account reviewed periodically?",
+]
+records_required = "GRNs, vendor correspondence, GR/IR clearing account analysis (MR11 logs)"
+population_sql = '''
+SELECT count(*) AS n, sum(value_received) AS value FROM grir
+'''
+sql = '''
+WITH gr AS (
+    SELECT po_number, po_item, max(posting_date) AS last_gr_date
+    FROM material_docs
+    WHERE list_contains($gr_movements, movement_type)
+    GROUP BY po_number, po_item
+)
+SELECT concat_ws('/', g.po_number, g.po_item) AS exception_id,
+       g.po_number, g.po_item, g.vendor, g.material, g.plant,
+       g.qty_received, g.qty_invoiced, g.qty_received - coalesce(g.qty_invoiced, 0) AS qty_not_invoiced,
+       g.value_received, g.value_invoiced, gr.last_gr_date,
+       date_diff('day', gr.last_gr_date, $cutoff_date) AS days_since_last_gr,
+       CASE WHEN g.value_received IS NOT NULL
+            THEN g.value_received - coalesce(g.value_invoiced, 0) END AS exception_value,
+       'Plant ' || g.plant AS audit_unit,
+       format('Received but not invoiced; last GR {} days before cut-off',
+              date_diff('day', gr.last_gr_date, $cutoff_date)) AS reason
+FROM grir g
+JOIN gr ON gr.po_number = g.po_number AND gr.po_item = g.po_item
+WHERE g.qty_received - coalesce(g.qty_invoiced, 0) > $qty_tolerance
+  AND date_diff('day', gr.last_gr_date, $cutoff_date) > $pending_days
+ORDER BY exception_value DESC NULLS LAST
+'''
+
+[test.params.pending_days]
+label = "Pending beyond (days since last GR)"
+default = 180
+[test.params.qty_tolerance]
+label = "Quantity tolerance"
+default = 0
+[test.params.gr_movements]
+label = "Goods-receipt movement types"
+default = ["101", "103"]

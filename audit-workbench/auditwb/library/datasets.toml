@@ -1,0 +1,349 @@
+# Standard datasets understood by the Audit Analytics Workbench.
+#
+# Every analytic test is written against these standard field names only.
+# Each company's SAP export is mapped onto them once (automatically, using the
+# synonyms below, or explicitly in the run profile), so the same test runs on
+# SAIL, MOIL or any other SAP company without change.
+#
+# Synonyms hold both the SAP technical field name (as exported from SE16N)
+# and the English column headings of the standard ALV list displays.
+# Matching ignores case, spaces and punctuation.
+#
+# Field types:
+#   id      identifier; trimmed, upper-cased, leading zeros stripped when
+#           purely numeric (SAP ALPHA conversion), so "0000100005" = "100005";
+#           keep_zeros = true for codes SAP stores without that conversion
+#           (plant, storage location, purchasing group, company code ...)
+#   text    free text / flags; trimmed, blank becomes empty
+#   date    parsed using the profile's SAP date format; "00.00.0000" = empty
+#   amount  parsed using the profile's SAP decimal notation; trailing minus
+#           ("1,234.00-") and brackets are negative
+#   qty     as amount
+#
+# key = true      rows where every key field is blank are dropped as
+#                 subtotal / total / blank lines (counted in Data Quality)
+# sign_by         for unsigned exports: if the named Debit/Credit field is a
+#                 credit indicator (H / C / Credit), a positive amount is
+#                 made negative, as SAP would display it
+
+[po_items]
+title = "Purchase Order items"
+sap_sources = ["ME2N", "ME2L", "ME2M", "ME80FN", "SE16N: EKKO + EKPO + EKET"]
+description = "One row per PO item. For open-PO tests, run ME2N with selection parameter WE101 so 'Still to be delivered' columns are present."
+
+[po_items.fields]
+po_number = { type = "id", key = true, label = "Purchase Order number", synonyms = ["EBELN", "Purchasing Document", "Purch.Doc.", "Purchase Order", "PO Number", "PO No"] }
+po_item = { type = "id", label = "PO item", synonyms = ["EBELP", "Item", "PO Item"] }
+doc_type = { type = "text", label = "PO document type", synonyms = ["BSART", "Purchasing Doc. Type", "Purch. Doc. Type", "Order Type", "Document Type", "Type"] }
+po_date = { type = "date", label = "PO document date", synonyms = ["BEDAT", "Document Date", "Doc. Date", "PO Date", "Purchase Order Date"] }
+created_on = { type = "date", label = "PO created on (system date)", synonyms = ["AEDAT", "Created On", "Created on"] }
+vendor = { type = "id", label = "Vendor code", synonyms = ["LIFNR", "Supplier/Supplying Plant", "Vendor/supplying plant", "Supplier", "Vendor", "Vendor Code"] }
+vendor_name = { type = "text", label = "Vendor name", synonyms = ["NAME1", "Name of Vendor", "Supplier Name", "Vendor Name"] }
+material = { type = "id", label = "Material code", synonyms = ["MATNR", "Material", "Material Number", "Material Code"] }
+short_text = { type = "text", label = "Short text", synonyms = ["TXZ01", "Short Text", "Material Description"] }
+material_group = { type = "id", keep_zeros = true, label = "Material group", synonyms = ["MATKL", "Material Group", "Matl Group"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+purch_group = { type = "id", keep_zeros = true, label = "Purchasing group", synonyms = ["EKGRP", "Purchasing Group", "Purch. Group", "PGr"] }
+purch_org = { type = "id", keep_zeros = true, label = "Purchasing organisation", synonyms = ["EKORG", "Purchasing Organization", "Purch. Org.", "POrg"] }
+quantity = { type = "qty", label = "Order quantity", synonyms = ["MENGE", "Order Quantity", "PO Quantity", "Quantity"] }
+order_unit = { type = "text", label = "Order unit", synonyms = ["MEINS", "Order Unit", "OUn"] }
+net_price = { type = "amount", label = "Net price", synonyms = ["NETPR", "Net Price", "Net Order Price"] }
+price_unit = { type = "qty", label = "Price unit", synonyms = ["PEINH", "Price Unit", "Per"] }
+net_value = { type = "amount", label = "Net order value", synonyms = ["NETWR", "Net Order Value", "Net Value", "PO Value", "Net value"] }
+currency = { type = "text", label = "Currency", synonyms = ["WAERS", "Currency", "Crcy"] }
+pr_number = { type = "id", label = "Purchase requisition", synonyms = ["BANFN", "Purchase Requisition", "Purch.Req.", "PR Number", "Requisition"] }
+delivery_date = { type = "date", label = "Delivery date", synonyms = ["EINDT", "Delivery Date", "Deliv. Date", "Item Delivery Date"] }
+open_qty = { type = "qty", label = "Still to be delivered (qty)", synonyms = ["Still to be delivered (qty)", "Still to be delivered (quantity)", "To be delivered (quantity)", "Open Quantity"] }
+open_value = { type = "amount", label = "Still to be delivered (value)", synonyms = ["Still to be delivered (value)", "To be delivered (value)", "Open Value"] }
+deletion_flag = { type = "text", label = "Deletion indicator", synonyms = ["LOEKZ", "Deletion Indicator", "Deletion ind.", "Deletion Indicator in Purchasing Document"] }
+delivery_completed = { type = "text", label = "Delivery completed indicator", synonyms = ["ELIKZ", "Delivery Completed", "Deliv. Compl.", "Delivery Completed Indicator"] }
+account_assignment = { type = "text", label = "Account assignment category", synonyms = ["KNTTP", "Acct Assignment Cat.", "Account Assignment Category"] }
+
+[material_docs]
+title = "Material documents (goods movements)"
+sap_sources = ["MB51", "SE16N: MSEG + MKPF (or MATDOC in S/4HANA)"]
+description = "One row per material document item. MB51 displays issues with a negative quantity."
+
+[material_docs.fields]
+mat_doc = { type = "id", key = true, label = "Material document", synonyms = ["MBLNR", "Material Document", "Mat. Doc.", "Material Doc."] }
+mat_doc_item = { type = "id", label = "Material document item", synonyms = ["ZEILE", "Material Doc.Item", "Mat.Doc.Item", "Item"] }
+mat_doc_year = { type = "id", label = "Material document year", synonyms = ["MJAHR", "Material Doc. Year", "Mat. Doc. Year"] }
+movement_type = { type = "id", label = "Movement type", synonyms = ["BWART", "Movement Type", "MvT", "Movement type"] }
+posting_date = { type = "date", label = "Posting date", synonyms = ["BUDAT", "BUDAT_MKPF", "Posting Date", "Pstng Date"] }
+document_date = { type = "date", label = "Document date", synonyms = ["BLDAT", "BLDAT_MKPF", "Document Date", "Doc. Date"] }
+entry_date = { type = "date", label = "Entry date", synonyms = ["CPUDT", "CPUDT_MKPF", "Entry Date", "Entered on"] }
+material = { type = "id", label = "Material", synonyms = ["MATNR", "Material"] }
+material_desc = { type = "text", label = "Material description", synonyms = ["MAKTX", "Material Description"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+storage_location = { type = "id", keep_zeros = true, label = "Storage location", synonyms = ["LGORT", "Storage Location", "SLoc"] }
+quantity = { type = "qty", label = "Quantity", synonyms = ["MENGE", "ERFMG", "Quantity", "Qty in Un. of Entry", "Quantity in UnE", "Qty in unit of entry"] }
+unit = { type = "text", label = "Unit", synonyms = ["MEINS", "ERFME", "Unit of Entry", "EUn", "Base Unit of Measure", "BUn"] }
+amount = { type = "amount", label = "Amount in local currency", sign_by = "debit_credit", synonyms = ["DMBTR", "Amount in LC", "Amount in Local Currency", "Amt.in Loc.Cur."] }
+debit_credit = { type = "text", label = "Debit/credit indicator", synonyms = ["SHKZG", "Debit/Credit Ind.", "Debit/Credit ind", "D/C"] }
+po_number = { type = "id", label = "Purchase order", synonyms = ["EBELN", "Purchase Order", "Purchasing Document", "Purch.Doc."] }
+po_item = { type = "id", label = "Purchase order item", synonyms = ["EBELP", "Purchase Order Item", "PO Item"] }
+vendor = { type = "id", label = "Vendor", synonyms = ["LIFNR", "Supplier", "Vendor"] }
+user_name = { type = "text", label = "User name", synonyms = ["USNAM", "USNAM_MKPF", "User Name", "User name"] }
+reference = { type = "text", label = "Reference / delivery note", synonyms = ["XBLNR", "XBLNR_MKPF", "Reference", "Delivery Note"] }
+cost_center = { type = "id", label = "Cost centre", synonyms = ["KOSTL", "Cost Center", "Cost Centre"] }
+reservation = { type = "id", label = "Reservation", synonyms = ["RSNUM", "Reservation"] }
+
+[stock]
+title = "Stock on hand (snapshot at cut-off)"
+sap_sources = ["MB52", "MC.9", "SE16N: MARD + MBEW"]
+description = "One row per material / plant / storage location. Take the snapshot as close to the cut-off date as possible and record the date in the profile."
+
+[stock.fields]
+material = { type = "id", key = true, label = "Material", synonyms = ["MATNR", "Material"] }
+material_desc = { type = "text", label = "Material description", synonyms = ["MAKTX", "Material Description"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+storage_location = { type = "id", keep_zeros = true, label = "Storage location", synonyms = ["LGORT", "Storage Location", "SLoc"] }
+material_type = { type = "text", label = "Material type", synonyms = ["MTART", "Material Type", "MTyp"] }
+material_group = { type = "id", keep_zeros = true, label = "Material group", synonyms = ["MATKL", "Material Group", "Matl Group"] }
+unrestricted_qty = { type = "qty", label = "Unrestricted stock quantity", synonyms = ["LABST", "Unrestricted", "Unrestricted use", "Unrestricted Stock"] }
+unit = { type = "text", label = "Base unit", synonyms = ["MEINS", "Base Unit of Measure", "BUn"] }
+stock_value = { type = "amount", label = "Value of unrestricted stock", synonyms = ["Value Unrestricted", "Value of Unrestricted Stock", "Val. Unrestricted", "Stock Value", "SALK3", "Total Value"] }
+
+[grir]
+title = "GR/IR balances per PO item"
+sap_sources = ["MB5S", "ME80FN (PO history)"]
+description = "One row per PO item with quantity/value received and invoiced."
+
+[grir.fields]
+po_number = { type = "id", key = true, label = "Purchase order", synonyms = ["EBELN", "Purchasing Document", "Purchase Order", "Purch.Doc."] }
+po_item = { type = "id", label = "PO item", synonyms = ["EBELP", "Item"] }
+vendor = { type = "id", label = "Vendor", synonyms = ["LIFNR", "Supplier", "Vendor"] }
+material = { type = "id", label = "Material", synonyms = ["MATNR", "Material"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+qty_received = { type = "qty", label = "Quantity received (GR)", synonyms = ["WEMNG", "GR quantity", "Quantity received", "Qty Received", "Goods Receipt Quantity", "Delivered Quantity"] }
+qty_invoiced = { type = "qty", label = "Quantity invoiced (IR)", synonyms = ["REMNG", "IR quantity", "Quantity invoiced", "Qty Invoiced", "Invoice Receipt Quantity", "Invoiced Quantity"] }
+value_received = { type = "amount", label = "Value received (GR)", synonyms = ["WEWRT", "GR value", "Value Received", "Goods Receipt Value"] }
+value_invoiced = { type = "amount", label = "Value invoiced (IR)", synonyms = ["REWRT", "IR value", "Value Invoiced", "Invoice Receipt Value"] }
+
+[vendor_master]
+title = "Vendor master"
+sap_sources = ["S_ALR_87012086 (vendor list)", "XK03", "SE16N: LFA1 (+ J_1IMOVEND for SSI/MSME status)"]
+description = "One row per vendor. Block and deletion flags are the status at the date of extraction, not at the date of each transaction."
+
+[vendor_master.fields]
+vendor = { type = "id", key = true, label = "Vendor code", synonyms = ["LIFNR", "Vendor", "Supplier", "Account", "Vendor Code"] }
+vendor_name = { type = "text", label = "Vendor name", synonyms = ["NAME1", "Name 1", "Name", "Vendor Name"] }
+created_on = { type = "date", label = "Created on", synonyms = ["ERDAT", "Created On", "Created on"] }
+created_by = { type = "text", label = "Created by", synonyms = ["ERNAM", "Created By", "Created by"] }
+account_group = { type = "text", label = "Account group", synonyms = ["KTOKK", "Account Group", "Acct Group"] }
+posting_block = { type = "text", label = "Central posting block", synonyms = ["SPERR", "Posting Block", "Central posting block", "Posting block"] }
+purchasing_block = { type = "text", label = "Central purchasing block", synonyms = ["SPERM", "Purchasing Block", "Central purchasing block", "Purch. block"] }
+deletion_flag = { type = "text", label = "Central deletion flag", synonyms = ["LOEVM", "Deletion Flag", "Central deletion flag", "Deletion flag"] }
+msme_status = { type = "text", label = "MSME / SSI status", synonyms = ["J_1ISSIST", "SSI Status", "SSI status", "MSME Status", "MSE Status", "MSME Category", "Type of Enterprise", "Enterprise Type"] }
+msme_reg_no = { type = "text", label = "Udyam / MSME registration no.", synonyms = ["Udyam Registration No", "Udyam Number", "UAM Number", "MSME Registration No"] }
+pan = { type = "text", label = "PAN", synonyms = ["J_1IPANNO", "PAN", "PAN Number"] }
+city = { type = "text", label = "City", synonyms = ["ORT01", "City"] }
+
+[vendor_items]
+title = "Vendor line items (open and cleared)"
+sap_sources = ["FBL1N (all items)", "SE16N: BSIK + BSAK (or BSEG/ACDOCA)"]
+description = "Run FBL1N with 'All items' so that both open and cleared items are present. Invoices are credit items and appear negative."
+
+[vendor_items.fields]
+company_code = { type = "id", keep_zeros = true, label = "Company code", synonyms = ["BUKRS", "Company Code", "CoCd"] }
+vendor = { type = "id", key = true, label = "Vendor", synonyms = ["LIFNR", "Account", "Vendor", "Supplier"] }
+doc_number = { type = "id", key = true, label = "Document number", synonyms = ["BELNR", "Document Number", "DocumentNo", "Document No"] }
+fiscal_year = { type = "id", label = "Fiscal year", synonyms = ["GJAHR", "Fiscal Year", "Year"] }
+doc_type = { type = "text", label = "Document type", synonyms = ["BLART", "Document Type", "Type", "Doc. Type"] }
+posting_date = { type = "date", label = "Posting date", synonyms = ["BUDAT", "Posting Date", "Pstng Date"] }
+document_date = { type = "date", label = "Document (invoice) date", synonyms = ["BLDAT", "Document Date", "Doc. Date"] }
+entry_date = { type = "date", label = "Entry date", synonyms = ["CPUDT", "Entry Date", "Entered on"] }
+baseline_date = { type = "date", label = "Baseline payment date", synonyms = ["ZFBDT", "Baseline Payment Dte", "Baseline Date", "Baseline date"] }
+net_due_date = { type = "date", label = "Net due date", synonyms = ["NETDT", "Net due date", "Net Due Date", "Due Date"] }
+reference = { type = "text", label = "Reference (vendor invoice no.)", synonyms = ["XBLNR", "Reference", "Invoice Reference", "Bill No"] }
+amount = { type = "amount", label = "Amount in local currency", sign_by = "debit_credit", synonyms = ["DMBTR", "Amount in local currency", "Amount in LC", "Amt in loc.cur.", "Amount in Local Currency", "Amount"] }
+debit_credit = { type = "text", label = "Debit/credit indicator", synonyms = ["SHKZG", "Debit/Credit ind", "Debit/Credit Ind.", "D/C"] }
+clearing_doc = { type = "id", label = "Clearing document", synonyms = ["AUGBL", "Clearing Document", "Clrng doc."] }
+clearing_date = { type = "date", label = "Clearing date", synonyms = ["AUGDT", "Clearing Date", "Clearing", "Clearing date"] }
+special_gl = { type = "text", label = "Special G/L indicator", synonyms = ["UMSKZ", "Special G/L ind.", "Special G/L Indicator", "Sp.G/L", "SG"] }
+payment_block = { type = "text", label = "Payment block", synonyms = ["ZLSPR", "Payment Block", "Pmnt Block"] }
+payment_terms = { type = "text", label = "Payment terms", synonyms = ["ZTERM", "Terms of Payment", "Payt Terms", "Payment Terms"] }
+text = { type = "text", label = "Item text", synonyms = ["SGTXT", "Text"] }
+assignment = { type = "text", label = "Assignment", synonyms = ["ZUONR", "Assignment"] }
+user_name = { type = "text", label = "User name", synonyms = ["USNAM", "User Name", "User name"] }
+reversal_doc = { type = "id", label = "Reversed with", synonyms = ["STBLG", "Reversed with", "Reverse document", "Reversal Document"] }
+
+[gl_items]
+title = "General ledger line items"
+sap_sources = ["FBL3N", "FAGLL03", "SE16N: BKPF + BSEG (or ACDOCA in S/4HANA)"]
+description = "One row per G/L line item. Include Entry Date, User Name, Transaction Code and Reversed-with in the layout; several finance tests need them."
+
+[gl_items.fields]
+company_code = { type = "id", keep_zeros = true, label = "Company code", synonyms = ["BUKRS", "Company Code", "CoCd"] }
+gl_account = { type = "id", key = true, label = "G/L account", synonyms = ["HKONT", "SAKNR", "RACCT", "G/L Account", "G/L Acct", "GL Account", "Account"] }
+doc_number = { type = "id", key = true, label = "Document number", synonyms = ["BELNR", "Document Number", "DocumentNo", "Document No"] }
+line_item = { type = "id", label = "Line item", synonyms = ["BUZEI", "Line item", "Itm"] }
+fiscal_year = { type = "id", label = "Fiscal year", synonyms = ["GJAHR", "Fiscal Year", "Year"] }
+posting_period = { type = "qty", label = "Posting period", synonyms = ["MONAT", "Posting period", "Period"] }
+doc_type = { type = "text", label = "Document type", synonyms = ["BLART", "Document Type", "Type", "Doc. Type"] }
+posting_date = { type = "date", label = "Posting date", synonyms = ["BUDAT", "Posting Date", "Pstng Date"] }
+document_date = { type = "date", label = "Document date", synonyms = ["BLDAT", "Document Date", "Doc. Date"] }
+entry_date = { type = "date", label = "Entry date", synonyms = ["CPUDT", "Entry Date", "Entered on"] }
+amount = { type = "amount", label = "Amount in local currency", sign_by = "debit_credit", synonyms = ["DMBTR", "HSL", "Amount in local currency", "Amount in LC", "Amt in loc.cur.", "Amount in Local Currency", "Amount"] }
+debit_credit = { type = "text", label = "Debit/credit indicator", synonyms = ["SHKZG", "Debit/Credit ind", "Debit/Credit Ind.", "D/C"] }
+user_name = { type = "text", label = "User name", synonyms = ["USNAM", "User Name", "User name", "Entered by"] }
+tcode = { type = "text", label = "Transaction code", synonyms = ["TCODE", "Transaction Code", "Transaction code", "TCode"] }
+text = { type = "text", label = "Item text", synonyms = ["SGTXT", "Text"] }
+header_text = { type = "text", label = "Document header text", synonyms = ["BKTXT", "Doc.Header Text", "Document Header Text"] }
+reference = { type = "text", label = "Reference", synonyms = ["XBLNR", "Reference"] }
+reversal_doc = { type = "id", label = "Reversed with", synonyms = ["STBLG", "Reversed with", "Reverse document", "Reversal Document"] }
+reversal_reason = { type = "text", label = "Reversal reason", synonyms = ["STGRD", "Reason for Reversal", "Reversal reason"] }
+cost_center = { type = "id", label = "Cost centre", synonyms = ["KOSTL", "Cost Center", "Cost Centre"] }
+profit_center = { type = "id", label = "Profit centre", synonyms = ["PRCTR", "Profit Center", "Profit Centre"] }
+
+[customer_items]
+title = "Customer line items (open and cleared)"
+sap_sources = ["FBL5N (all items)", "SE16N: BSID + BSAD"]
+description = "Run FBL5N with 'All items'. Invoices are debit items (positive)."
+
+[customer_items.fields]
+company_code = { type = "id", keep_zeros = true, label = "Company code", synonyms = ["BUKRS", "Company Code", "CoCd"] }
+customer = { type = "id", key = true, label = "Customer", synonyms = ["KUNNR", "Account", "Customer"] }
+doc_number = { type = "id", key = true, label = "Document number", synonyms = ["BELNR", "Document Number", "DocumentNo", "Document No"] }
+doc_type = { type = "text", label = "Document type", synonyms = ["BLART", "Document Type", "Type", "Doc. Type"] }
+posting_date = { type = "date", label = "Posting date", synonyms = ["BUDAT", "Posting Date", "Pstng Date"] }
+document_date = { type = "date", label = "Document date", synonyms = ["BLDAT", "Document Date", "Doc. Date"] }
+baseline_date = { type = "date", label = "Baseline payment date", synonyms = ["ZFBDT", "Baseline Payment Dte", "Baseline Date"] }
+net_due_date = { type = "date", label = "Net due date", synonyms = ["NETDT", "Net due date", "Net Due Date", "Due Date"] }
+reference = { type = "text", label = "Reference", synonyms = ["XBLNR", "Reference"] }
+amount = { type = "amount", label = "Amount in local currency", sign_by = "debit_credit", synonyms = ["DMBTR", "Amount in local currency", "Amount in LC", "Amt in loc.cur.", "Amount"] }
+debit_credit = { type = "text", label = "Debit/credit indicator", synonyms = ["SHKZG", "Debit/Credit ind", "D/C"] }
+clearing_doc = { type = "id", label = "Clearing document", synonyms = ["AUGBL", "Clearing Document", "Clrng doc."] }
+clearing_date = { type = "date", label = "Clearing date", synonyms = ["AUGDT", "Clearing Date", "Clearing"] }
+special_gl = { type = "text", label = "Special G/L indicator", synonyms = ["UMSKZ", "Special G/L ind.", "Sp.G/L", "SG"] }
+payment_terms = { type = "text", label = "Payment terms", synonyms = ["ZTERM", "Terms of Payment", "Payt Terms"] }
+text = { type = "text", label = "Item text", synonyms = ["SGTXT", "Text"] }
+
+[customer_master]
+title = "Customer master"
+sap_sources = ["S_ALR_87012179 (customer list)", "XD03", "SE16N: KNA1"]
+description = "One row per customer. Block flags are the status at the date of extraction."
+
+[customer_master.fields]
+customer = { type = "id", key = true, label = "Customer", synonyms = ["KUNNR", "Customer", "Account"] }
+customer_name = { type = "text", label = "Customer name", synonyms = ["NAME1", "Name 1", "Name", "Customer Name"] }
+created_on = { type = "date", label = "Created on", synonyms = ["ERDAT", "Created On", "Created on"] }
+posting_block = { type = "text", label = "Central posting block", synonyms = ["SPERR", "Posting Block", "Central posting block"] }
+order_block = { type = "text", label = "Central order block", synonyms = ["AUFSD", "Order Block", "Central order block"] }
+delivery_block = { type = "text", label = "Central delivery block", synonyms = ["LIFSD", "Delivery Block", "Central delivery block"] }
+billing_block = { type = "text", label = "Central billing block", synonyms = ["FAKSD", "Billing Block", "Central billing block"] }
+deletion_flag = { type = "text", label = "Central deletion flag", synonyms = ["LOEVM", "Deletion Flag", "Central deletion flag"] }
+
+[billing_items]
+title = "Billing document items (sales invoices, credit/debit memos)"
+sap_sources = ["VF05N", "SE16N: VBRK + VBRP"]
+description = "One row per billing item. Include cancelled documents; the Cancelled flag is used to exclude them."
+
+[billing_items.fields]
+billing_doc = { type = "id", key = true, label = "Billing document", synonyms = ["VBELN", "Billing Document", "Billing Doc."] }
+billing_item = { type = "id", label = "Billing item", synonyms = ["POSNR", "Item"] }
+billing_type = { type = "text", label = "Billing type", synonyms = ["FKART", "Billing Type", "BillT"] }
+billing_date = { type = "date", label = "Billing date", synonyms = ["FKDAT", "Billing Date", "Billing date"] }
+customer = { type = "id", label = "Sold-to party / payer", synonyms = ["KUNAG", "KUNRG", "Sold-To Party", "Sold-to party", "Payer", "Customer"] }
+material = { type = "id", label = "Material", synonyms = ["MATNR", "Material"] }
+quantity = { type = "qty", label = "Billed quantity", synonyms = ["FKIMG", "Billed Quantity", "Invoiced Quantity", "Quantity"] }
+unit = { type = "text", label = "Sales unit", synonyms = ["VRKME", "Sales Unit", "SU"] }
+net_value = { type = "amount", label = "Net value", synonyms = ["NETWR", "Net Value", "Net value"] }
+currency = { type = "text", label = "Currency", synonyms = ["WAERK", "Currency", "Doc. Currency"] }
+ref_doc = { type = "id", label = "Reference (preceding) document", synonyms = ["VGBEL", "Reference Document", "Preceding Document", "Ref. Document"] }
+cancelled = { type = "text", label = "Cancelled indicator", synonyms = ["FKSTO", "Cancelled", "Billing document is cancelled"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+sales_org = { type = "id", keep_zeros = true, label = "Sales organisation", synonyms = ["VKORG", "Sales Organization", "SOrg."] }
+created_by = { type = "text", label = "Created by", synonyms = ["ERNAM", "Created By", "Created by"] }
+
+[approved_prices]
+title = "Approved price list (criteria supplied by audit)"
+sap_sources = ["Company's approved price circulars, keyed in by audit", "VK13 / condition records (on-site)"]
+description = "Audit criteria, not an ERP export: approved minimum price per unit for each material and validity period."
+
+[approved_prices.fields]
+material = { type = "id", key = true, label = "Material", synonyms = ["MATNR", "Material", "Product"] }
+unit = { type = "text", label = "Unit", synonyms = ["Unit", "UoM", "Sales Unit"] }
+valid_from = { type = "date", label = "Valid from", synonyms = ["DATAB", "Valid From", "Valid from", "From"] }
+valid_to = { type = "date", label = "Valid to", synonyms = ["DATBI", "Valid To", "Valid to", "To"] }
+approved_price = { type = "amount", label = "Approved price per unit", synonyms = ["Approved Price", "Price", "Rate", "KBETR", "Amount"] }
+authority = { type = "text", label = "Approving authority / circular ref.", synonyms = ["Authority", "Circular", "Reference"] }
+
+[wbs_master]
+title = "WBS elements / project structure with status and dates"
+sap_sources = ["CN43N", "CN41N", "SE16N: PRPS + PROJ (+ JEST for status)"]
+description = "One row per WBS element with system status and basic / actual dates."
+
+[wbs_master.fields]
+wbs_element = { type = "id", key = true, label = "WBS element", synonyms = ["POSID", "WBS Element", "WBS element", "WBS"] }
+project = { type = "id", label = "Project definition", synonyms = ["PSPID", "Project Definition", "Project def.", "Project"] }
+description = { type = "text", label = "Description", synonyms = ["POST1", "Description", "Name"] }
+system_status = { type = "text", label = "System status", synonyms = ["System Status", "Status", "SysStatus", "TXT04"] }
+basic_start = { type = "date", label = "Basic start date", synonyms = ["Basic start date", "Basic Start Date", "Bsc start", "PSTRT", "Start Date"] }
+basic_finish = { type = "date", label = "Basic finish date", synonyms = ["Basic finish date", "Basic Finish Date", "Basic fin.", "PENDE", "Finish Date"] }
+forecast_finish = { type = "date", label = "Forecast finish date", synonyms = ["Forecast finish", "Forecast Finish Date", "PEDTE"] }
+actual_start = { type = "date", label = "Actual start date", synonyms = ["Actual start", "Actual Start Date", "ISDD"] }
+actual_finish = { type = "date", label = "Actual finish date", synonyms = ["Actual finish", "Actual Finish Date", "IEDD"] }
+teco_date = { type = "date", label = "Technically completed on", synonyms = ["TECO date", "Technically completed on", "TECO Date"] }
+created_on = { type = "date", label = "Created on", synonyms = ["ERDAT", "Created On", "Created on"] }
+responsible = { type = "text", label = "Person responsible", synonyms = ["VERNA", "Responsible Person", "Person responsible"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+
+[wbs_budget]
+title = "Project budget vs actual"
+sap_sources = ["S_ALR_87013558 (Budget/Actual/Commitment/Rem Plan/Assigned)", "CJI4 / CJ30 overview"]
+description = "One row per WBS element or project: current budget, cumulative actual, commitments."
+
+[wbs_budget.fields]
+wbs_element = { type = "id", key = true, label = "WBS element / project", synonyms = ["WBS Element", "WBS element", "Object", "Project", "POSID"] }
+budget = { type = "amount", label = "Current budget", synonyms = ["Budget", "Current Budget", "Current budget"] }
+actual = { type = "amount", label = "Cumulative actual cost", synonyms = ["Actual", "Actual Costs", "Actual costs", "Cumulative Actual"] }
+commitment = { type = "amount", label = "Commitments", synonyms = ["Commitment", "Commitments", "Commitmt"] }
+assigned = { type = "amount", label = "Assigned (actual + commitment)", synonyms = ["Assigned"] }
+original_budget = { type = "amount", label = "Original budget", synonyms = ["Original Budget", "Original budget"] }
+
+[wbs_costs]
+title = "Project actual cost line items"
+sap_sources = ["CJI3", "SE16N: COEP (value type 04)"]
+description = "One row per actual cost line item posted to a WBS element."
+
+[wbs_costs.fields]
+wbs_element = { type = "id", key = true, label = "WBS element", synonyms = ["WBS Element", "WBS element", "Object", "POSID"], strip_prefixes = ["WBS "] }
+doc_number = { type = "id", label = "CO document number", synonyms = ["BELNR", "Document Number", "DocumentNo", "Document number"] }
+ref_doc = { type = "id", label = "Reference document number", synonyms = ["REFBN", "Ref. Document Number", "Ref Document Number", "Reference document"] }
+posting_date = { type = "date", label = "Posting date", synonyms = ["BUDAT", "Posting Date", "Posting date", "Pstng Date"] }
+cost_element = { type = "id", label = "Cost element", synonyms = ["KSTAR", "Cost Element", "Cost element", "Cost Elem."] }
+amount = { type = "amount", label = "Value in controlling area currency", synonyms = ["WKGBTR", "Val/COArea Crcy", "Value in CO area currency", "Val.in rep.cur.", "Value in Obj. Crcy", "Value TranCurr", "Amount"] }
+vendor = { type = "id", label = "Vendor / offsetting account", synonyms = ["LIFNR", "Vendor", "Offsetting account"] }
+user_name = { type = "text", label = "User name", synonyms = ["USNAM", "User Name", "User name", "Created by"] }
+text = { type = "text", label = "Text", synonyms = ["SGTXT", "Name", "Text", "Description"] }
+
+[assets]
+title = "Fixed asset register incl. Assets under Construction (CWIP)"
+sap_sources = ["AR01 (Asset Balances)", "S_ALR_87011990 (Asset History Sheet)", "SE16N: ANLA + ANLC"]
+description = "One row per asset / sub-number at the cut-off date. Assets under Construction are identified by asset class (set in the profile)."
+
+[assets.fields]
+asset = { type = "id", key = true, label = "Asset number", synonyms = ["ANLN1", "Asset", "Asset Number", "Main Asset Number"] }
+sub_number = { type = "id", label = "Asset sub-number", synonyms = ["ANLN2", "Subnumber", "Sub-number", "SNo."] }
+asset_class = { type = "id", label = "Asset class", synonyms = ["ANLKL", "Asset Class", "Class"] }
+description = { type = "text", label = "Asset description", synonyms = ["TXT50", "Asset description", "Asset Description", "Description"] }
+capitalized_on = { type = "date", label = "Capitalised on", synonyms = ["AKTIV", "Capitalized on", "Capitalised on", "Cap.date", "Capitalization Date"] }
+first_acq_date = { type = "date", label = "First acquisition on", synonyms = ["ZUGDT", "First acquisition on", "First Acquisition On", "Asset value date"] }
+deactivation_date = { type = "date", label = "Deactivation on", synonyms = ["DEAKT", "Deactivation on", "Deactivation On"] }
+acquisition_value = { type = "amount", label = "Acquisition value (APC)", synonyms = ["Acquis.val.", "Acquisition value", "Acquisition Value", "Cum.acq.value", "Current APC", "APC"] }
+accum_dep = { type = "amount", label = "Accumulated depreciation", synonyms = ["Accum.dep.", "Accumulated depreciation", "Accumulated Depreciation"] }
+book_value = { type = "amount", label = "Book value", synonyms = ["Book val.", "Book value", "Book Value", "Curr.bk.val.", "Current book value", "Net Book Value"] }
+company_code = { type = "id", keep_zeros = true, label = "Company code", synonyms = ["BUKRS", "Company Code", "CoCd"] }
+cost_center = { type = "id", label = "Cost centre", synonyms = ["KOSTL", "Cost Center", "Cost Centre"] }
+plant = { type = "id", keep_zeros = true, label = "Plant", synonyms = ["WERKS", "Plant"] }
+wbs_element = { type = "id", label = "WBS element (settlement / investment)", synonyms = ["POSNR", "PS_PSP_PNR2", "WBS Element", "WBS element", "Investment WBS"] }
+
+[holidays]
+title = "Holiday list (criteria supplied by audit)"
+sap_sources = ["Company's holiday circular, keyed in by audit", "SCAL factory calendar"]
+description = "One row per holiday. Weekly offs are configured as a parameter, not listed here."
+
+[holidays.fields]
+date = { type = "date", key = true, label = "Holiday date", synonyms = ["Date", "Holiday Date", "Holiday"] }
+description = { type = "text", label = "Description", synonyms = ["Description", "Occasion", "Name"] }

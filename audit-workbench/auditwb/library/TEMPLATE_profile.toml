@@ -1,0 +1,96 @@
+# Audit Analytics Workbench: run profile
+# One file per company (or per SAIL plant) audit. Paths are relative to this file.
+# Dates are written YYYY-MM-DD. Lines starting with # are comments.
+
+[audit]
+company = "MOIL Limited"
+unit = ""                      # e.g. "Bokaro Steel Plant" for SAIL unit-wise plans
+tier = "A"
+lead_team = ""
+period_from = 2025-04-01
+period_to = 2026-03-31
+cutoff_date = 2026-03-31       # stock / open-item cut-off; usually the period end
+
+[sap]
+# Settings of the SAP user who took the extracts (SU3 > Defaults).
+decimal_notation = "1,234,567.89"   # or "1.234.567,89" or "1 234 567,89"
+date_format = "DD.MM.YYYY"          # or MM/DD/YYYY, YYYY-MM-DD, DD/MM/YYYY ...
+
+# ---------------------------------------------------------------------------
+# Extracts. Give only those you have. Run `python -m auditwb checklist <profile>`
+# to see which extracts and columns the selected topics need.
+# `files` may list several exports (e.g. one per plant or per quarter).
+# `columns` is needed only where automatic mapping fails:
+#     columns = { vendor = "Supplier Code", po_date = "PO Dt" }
+# ---------------------------------------------------------------------------
+
+[datasets.po_items]
+files = ["extracts/ME2N.xlsx"]
+sap_report = "ME2N (selection WE101), all purchasing groups"
+extracted_on = 2026-04-15
+
+[datasets.material_docs]
+files = ["extracts/MB51.xlsx"]
+sap_report = "MB51"
+
+[datasets.vendor_master]
+files = ["extracts/vendor_master.xlsx"]
+sap_report = "SE16N LFA1 + J_1IMOVEND"
+
+[datasets.vendor_items]
+files = ["extracts/FBL1N.xlsx"]
+sap_report = "FBL1N all items"
+
+[datasets.gl_items]
+files = ["extracts/FBL3N.xlsx"]
+sap_report = "FBL3N"
+
+# [datasets.stock]            files = ["extracts/MB52.xlsx"]
+# [datasets.grir]             files = ["extracts/MB5S.xlsx"]
+# [datasets.customer_items]   files = ["extracts/FBL5N.xlsx"]
+# [datasets.customer_master]  files = ["extracts/customers.xlsx"]
+# [datasets.billing_items]    files = ["extracts/VF05N.xlsx"]
+# [datasets.approved_prices]  files = ["criteria/approved_prices.xlsx"]
+# [datasets.wbs_master]       files = ["extracts/CN43N.xlsx"]
+# [datasets.wbs_budget]       files = ["extracts/S_ALR_87013558.xlsx"]
+# [datasets.wbs_costs]        files = ["extracts/CJI3.xlsx"]
+# [datasets.assets]           files = ["extracts/AR01.xlsx"]
+# [datasets.holidays]         files = ["criteria/holidays.xlsx"]
+
+# ---------------------------------------------------------------------------
+# Annexure-II: the sixteen topics (four in each of four business processes).
+# Topic IDs: `python -m auditwb topics`. Tests for these topics are run.
+# ---------------------------------------------------------------------------
+
+[annexure_ii]
+topics = [
+  "T1A01", "T1A03", "T1A06", "T1A07",
+  "T2A01", "T2A02", "T2A05", "T2A07",
+  "T4A02", "T4A03", "T4A04", "T4A05",
+  "T7A01", "T7A02", "T7A05", "T7A08",
+]
+fewer_business_processes_reason = ""
+
+# Optional per-topic entries for the judgement columns:
+# [annexure_ii.topic.T1A01]
+# reason_codes = "C, D"
+# recommend = "Y"
+# units = "Purchase Department, Plant-level Stores"
+# remarks = "Material exception population concentrated in two purchasing groups"
+
+# ---------------------------------------------------------------------------
+# Parameters: change a test's threshold or criteria here, never in the library.
+# Every change is listed on the Parameters sheet of the working paper.
+# ---------------------------------------------------------------------------
+
+[params.common]                  # applied to every test that has the parameter
+# mse_status_values = ["1", "2"]
+
+[params."PRC-SPLIT-01"]
+threshold = 1000000              # from the company's DoP / tender limits
+
+[params."FIN-SENSGL-01"]
+sensitive_gls = []               # e.g. ["450000", "199999"]
+
+# [run]
+# tests = ["PRC-SPLIT-01"]       # run only these tests instead of those for the topics above

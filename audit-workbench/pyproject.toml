@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audit-workbench"
+version = "0.1.0"
+description = "Offline rule-based analytics on SAP extracts for data-driven compliance audit (OO-53, DGA Steel)"
+requires-python = ">=3.11"
+dependencies = ["duckdb>=1.0", "openpyxl>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+auditwb = "auditwb.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["auditwb*"]
+
+[tool.setuptools.package-data]
+auditwb = ["library/*.toml", "library/tests/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

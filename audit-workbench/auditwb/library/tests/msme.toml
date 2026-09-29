@@ -1,0 +1,172 @@
+# Analytic tests: MSME transactions (company-specific topics, OO-53 paras 6 and 13)
+# (conventions: see the header of procurement.toml)
+#
+# MSE status comes from the vendor master. In SAP ECC (India localisation) this is
+# usually the SSI status (LFA1-J_1ISSIST); in S/4HANA it is often a custom field on the
+# business partner. The codes vary by company, so confirm the codes for Micro and Small
+# enterprises and set them in the profile. Medium enterprises are not "suppliers" under
+# s.2(n) of the MSMED Act and are not covered by s.15.
+
+[[test]]
+id = "MSE-PAY45-01"
+title = "Payments to Micro and Small Enterprises beyond 45 days"
+topics = ["TCS01"]
+exception_unit = "invoices"
+requires = ["vendor_items.vendor", "vendor_items.doc_number", "vendor_items.doc_type", "vendor_items.posting_date", "vendor_items.amount", "vendor_master.vendor", "vendor_master.msme_status"]
+rule = """
+Invoices (document types listed below; credit postings; not reversed) of vendors whose
+MSE status is Micro or Small, where the days from the start date (posting date, or
+document / baseline date if chosen) to payment (clearing date), or to the cut-off date
+if still unpaid, exceed the maximum days. Covers invoices paid in the audit period and
+invoices open at the cut-off. Where a bank rate is given, indicative interest under s.16
+(compound, monthly rests, three times the RBI bank rate) is computed.
+"""
+interpretation = """
+Section 15 runs from the date of acceptance or deemed acceptance of the goods / services;
+the GR / service entry date is the closest ERP proxy and the posting date is a practical
+default. The agreed period cannot exceed 45 days; where there is no agreement the limit
+is 15 days. Interest is indicative only. Confirm the MSE registration (Udyam) was valid on
+the date of supply.
+"""
+field_questions = [
+  "What was the agreed payment period, and on what date were the goods / services accepted?",
+  "Was interest under s.16 paid or provided for? Is it disclosed as required by s.22?",
+  "Is the delay reported in the half-yearly MSME Form I return to the MCA?",
+]
+records_required = "Udyam registration of the vendor, PO payment terms, GRN / acceptance dates, payment vouchers, s.22 disclosure, MSME Form I"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', i.company_code, i.fiscal_year, i.doc_number)) AS n, -sum(i.amount) AS value
+FROM vendor_items i JOIN vendor_master v USING (vendor)
+WHERE list_contains($mse_status_values, upper(trim(coalesce(v.msme_status, ''))))
+  AND list_contains($invoice_doc_types, i.doc_type) AND coalesce(i.special_gl, '') = '' AND i.amount < 0
+  AND i.posting_date <= $cutoff_date AND coalesce(i.clearing_date, $cutoff_date) >= $period_from
+'''
+sql = '''
+WITH mse AS (
+    SELECT vendor, vendor_name, msme_status
+    FROM vendor_master
+    WHERE list_contains($mse_status_values, upper(trim(coalesce(msme_status, ''))))
+),
+inv AS (
+    SELECT company_code, vendor, doc_number, fiscal_year,
+           any_value(doc_type) AS doc_type, any_value(reference) AS reference,
+           min(posting_date) AS posting_date, min(document_date) AS document_date,
+           min(baseline_date) AS baseline_date, -sum(amount) AS amount,
+           max(clearing_date) AS clearing_date, any_value(clearing_doc) AS clearing_doc,
+           any_value(reversal_doc) AS reversal_doc
+    FROM vendor_items
+    WHERE list_contains($invoice_doc_types, doc_type) AND coalesce(special_gl, '') = ''
+    GROUP BY company_code, vendor, doc_number, fiscal_year
+    HAVING sum(amount) < 0
+),
+x AS (
+    SELECT inv.*, mse.vendor_name, mse.msme_status,
+           CASE $start_basis
+                WHEN 'document_date' THEN coalesce(inv.document_date, inv.posting_date)
+                WHEN 'baseline_date' THEN coalesce(inv.baseline_date, inv.posting_date)
+                ELSE inv.posting_date END AS start_date,
+           inv.clearing_date IS NOT NULL AND inv.clearing_date <= $cutoff_date AS paid
+    FROM inv JOIN mse USING (vendor)
+    WHERE coalesce(inv.reversal_doc, '') = ''
+),
+y AS (
+    SELECT *,
+           CASE WHEN paid THEN clearing_date ELSE $cutoff_date END AS end_date,
+           date_diff('day', start_date, CASE WHEN paid THEN clearing_date ELSE $cutoff_date END) AS days_taken
+    FROM x
+    WHERE start_date <= $cutoff_date
+      AND (NOT paid OR clearing_date >= $period_from)
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, vendor, vendor_name, msme_status, doc_number, fiscal_year, doc_type, reference,
+       start_date, clearing_date, CASE WHEN paid THEN 'Paid' ELSE 'Unpaid at cut-off' END AS payment_status,
+       days_taken, days_taken - $max_days AS days_beyond_limit, amount,
+       CASE WHEN $bank_rate > 0
+            THEN round(amount * (pow(1 + 3 * $bank_rate / 100.0 / 12, (days_taken - $max_days) / 30.0) - 1), 2)
+       END AS indicative_interest_s16,
+       amount AS exception_value,
+       format('{} days from {} to {} (limit {} days)', days_taken,
+              replace($start_basis, '_', ' '), CASE WHEN paid THEN 'payment' ELSE 'cut-off, unpaid' END, $max_days) AS reason
+FROM y
+WHERE days_taken > $max_days
+ORDER BY amount DESC
+'''
+
+[test.params.mse_status_values]
+label = "Vendor-master codes meaning Micro or Small enterprise (upper case)"
+default = ["1", "2", "MICRO", "SMALL", "MI", "SM"]
+help = "Confirm the codes used in the company's vendor master; medium enterprises are excluded."
+[test.params.invoice_doc_types]
+label = "Vendor invoice document types"
+default = ["KR", "RE"]
+[test.params.max_days]
+label = "Maximum days allowed"
+default = 45
+[test.params.start_basis]
+label = "Start date basis: posting_date, document_date or baseline_date"
+default = "posting_date"
+[test.params.bank_rate]
+label = "RBI bank rate for indicative s.16 interest, % (0 = do not compute)"
+default = 0
+
+[[test]]
+id = "MSE-SHARE-01"
+title = "Share of procurement from Micro and Small Enterprises below target"
+topics = ["TCS02"]
+exception_unit = "shortfall"
+requires = ["po_items.po_number", "po_items.vendor", "po_items.po_date", "po_items.net_value", "vendor_master.vendor", "vendor_master.msme_status"]
+rule = """
+Share of the value of POs placed in the audit period on vendors whose MSE status is
+Micro or Small, compared with the target % (25% under the Public Procurement Policy for
+MSEs Order, 2012 as amended). An exception is reported when the share is below the
+target; value involved = shortfall against the target.
+"""
+interpretation = """
+The Policy's target is measured on annual procurement of goods and services excluding
+items the company is permitted to exclude; PO value placed is a proxy. The sub-targets
+for SC/ST-owned (4%) and women-owned (3%) MSEs need owner category data, not usually in
+the vendor master.
+"""
+field_questions = [
+  "What share did the company report on the MSME Sambandh portal?",
+  "Which items were excluded from the base, and on what authority?",
+  "Were MSE bidders given the purchase preference and exemptions due under the Policy?",
+]
+records_required = "Annual procurement plan, MSME Sambandh reports, tender documents showing MSE preference"
+population_sql = '''
+SELECT count(DISTINCT po_number) AS n, sum(net_value) AS value
+FROM po_items WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH p AS (
+    SELECT vendor, sum(net_value) AS value
+    FROM po_items
+    WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+    GROUP BY vendor
+),
+mse AS (
+    SELECT vendor FROM vendor_master
+    WHERE list_contains($mse_status_values, upper(trim(coalesce(msme_status, ''))))
+),
+t AS (
+    SELECT sum(p.value) AS total_procurement,
+           sum(CASE WHEN mse.vendor IS NOT NULL THEN p.value ELSE 0 END) AS mse_procurement,
+           count(DISTINCT mse.vendor) AS mse_vendors_used
+    FROM p LEFT JOIN mse USING (vendor)
+)
+SELECT 'MSE-SHARE' AS exception_id,
+       total_procurement, mse_procurement, mse_vendors_used,
+       round(100 * mse_procurement / total_procurement, 2) AS mse_share_pct,
+       $target_pct AS target_pct,
+       total_procurement * $target_pct / 100.0 - mse_procurement AS exception_value,
+       format('MSE share {}% against target {}%', round(100 * mse_procurement / total_procurement, 2), $target_pct) AS reason
+FROM t
+WHERE total_procurement > 0 AND 100 * mse_procurement / total_procurement < $target_pct
+'''
+
+[test.params.mse_status_values]
+label = "Vendor-master codes meaning Micro or Small enterprise (upper case)"
+default = ["1", "2", "MICRO", "SMALL", "MI", "SM"]
+[test.params.target_pct]
+label = "Target share, %"
+default = 25

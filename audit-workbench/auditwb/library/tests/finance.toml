@@ -1,0 +1,610 @@
+# Analytic tests: Business Process 7, Finance & Accounting
+# (conventions: see the header of procurement.toml)
+#
+# Document value of a G/L document = sum of its debit lines (positive amounts).
+# Amounts must be signed (credits negative), as FBL3N / FBL1N display them; the Data
+# Quality sheet warns when an extract has no negative amounts.
+
+[[test]]
+id = "FIN-DUPINV-01"
+title = "Duplicate vendor invoices: same vendor, reference and amount"
+topics = ["T7A05"]
+exception_unit = "duplicate groups"
+requires = ["vendor_items.vendor", "vendor_items.doc_number", "vendor_items.doc_type", "vendor_items.posting_date", "vendor_items.reference", "vendor_items.amount"]
+rule = """
+Vendor invoice documents (document types listed below; credit postings only; not
+reversed where 'Reversed with' is in the extract) grouped by vendor + normalised
+reference (letters and digits only, leading zeros removed) + amount. Groups with more
+than one document are exceptions. Value involved = amount of every document after the
+first in each group; payment status shown.
+"""
+interpretation = """
+A second posting of the same bill is a potential duplicate payment if both are cleared.
+Instalment bills with the same reference and amount can be legitimate.
+"""
+field_questions = [
+  "Are both documents for the same supply / bill? Were both paid?",
+  "Has the excess payment been recovered or adjusted?",
+  "Why did the duplicate-invoice check in SAP (vendor + reference) not stop the posting?",
+]
+records_required = "Both invoices with supporting bills, payment documents, recovery / adjustment entries"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n, -sum(amount) AS value
+FROM vendor_items
+WHERE list_contains($invoice_doc_types, doc_type) AND coalesce(special_gl, '') = ''
+  AND posting_date BETWEEN $period_from AND $period_to AND amount < 0
+'''
+sql = '''
+WITH inv AS (
+    SELECT company_code, vendor, doc_number, fiscal_year,
+           any_value(doc_type) AS doc_type, min(posting_date) AS posting_date,
+           min(document_date) AS document_date, any_value(reference) AS reference,
+           -sum(amount) AS amount, any_value(clearing_doc) AS clearing_doc,
+           max(clearing_date) AS clearing_date, any_value(reversal_doc) AS reversal_doc
+    FROM vendor_items
+    WHERE list_contains($invoice_doc_types, doc_type) AND coalesce(special_gl, '') = ''
+    GROUP BY company_code, vendor, doc_number, fiscal_year
+    HAVING sum(amount) < 0
+),
+n AS (
+    SELECT *, ltrim(upper(regexp_replace(coalesce(reference, ''), '[^A-Za-z0-9]', '', 'g')), '0') AS ref_normalised
+    FROM inv
+    WHERE coalesce(reversal_doc, '') = '' AND amount >= $min_amount
+),
+g AS (
+    SELECT *,
+           count(*) OVER grp AS documents_in_group,
+           row_number() OVER (PARTITION BY vendor, ref_normalised, amount ORDER BY posting_date, doc_number) AS seq,
+           max(posting_date) OVER grp AS last_posting_in_group
+    FROM n
+    WHERE ref_normalised <> ''
+    WINDOW grp AS (PARTITION BY vendor, ref_normalised, amount)
+)
+SELECT concat_ws('|', vendor, ref_normalised, round(amount, 2)) AS exception_id,
+       company_code, vendor, doc_number, fiscal_year, doc_type, posting_date, document_date,
+       reference, ref_normalised, amount, documents_in_group, seq,
+       clearing_doc, clearing_date,
+       CASE WHEN clearing_doc IS NOT NULL THEN 'Cleared (paid)' ELSE 'Open' END AS payment_status,
+       CASE WHEN seq > 1 THEN amount ELSE 0 END AS exception_value,
+       format('{} documents for vendor {} with reference {} and amount {}', documents_in_group, vendor,
+              ref_normalised, round(amount, 2)) AS reason
+FROM g
+WHERE documents_in_group > 1
+  AND last_posting_in_group BETWEEN $period_from AND $period_to
+ORDER BY amount DESC, exception_id, seq
+'''
+
+[test.params.invoice_doc_types]
+label = "Vendor invoice document types"
+default = ["KR", "RE"]
+help = "KR = vendor invoice (FI), RE = invoice receipt (MM / MIRO). Add company-specific types."
+[test.params.min_amount]
+label = "Minimum invoice amount, Rs."
+default = 10000
+
+[[test]]
+id = "FIN-DUPINV-02"
+title = "Possible duplicate invoices: same vendor and amount, different reference, close dates"
+topics = ["T7A05"]
+exception_unit = "invoice pairs"
+requires = ["vendor_items.vendor", "vendor_items.doc_number", "vendor_items.doc_type", "vendor_items.posting_date", "vendor_items.amount"]
+rule = """
+Pairs of vendor invoice documents for the same vendor and the same amount whose
+invoice dates (document date, else posting date) are within the window, but whose
+normalised references differ: the second posting may carry an altered bill number.
+"""
+interpretation = """
+Recurring monthly bills of a fixed amount (rent, AMC, hire charges) will appear here
+if the window is long; keep it short.
+"""
+field_questions = [
+  "Do the two documents relate to different supplies / periods?",
+  "Were both paid? Has the excess been recovered?",
+]
+records_required = "Both invoices with supporting bills and GRNs / service entry sheets, payment documents"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n, -sum(amount) AS value
+FROM vendor_items
+WHERE list_contains($invoice_doc_types, doc_type) AND coalesce(special_gl, '') = ''
+  AND posting_date BETWEEN $period_from AND $period_to AND amount < 0
+'''
+sql = '''
+WITH inv AS (
+    SELECT company_code, vendor, doc_number, fiscal_year,
+           min(posting_date) AS posting_date, coalesce(min(document_date), min(posting_date)) AS invoice_date,
+           any_value(reference) AS reference, -sum(amount) AS amount,
+           any_value(clearing_doc) AS clearing_doc, any_value(reversal_doc) AS reversal_doc
+    FROM vendor_items
+    WHERE list_contains($invoice_doc_types, doc_type) AND coalesce(special_gl, '') = ''
+    GROUP BY company_code, vendor, doc_number, fiscal_year
+    HAVING sum(amount) < 0
+),
+n AS (
+    SELECT *, ltrim(upper(regexp_replace(coalesce(reference, ''), '[^A-Za-z0-9]', '', 'g')), '0') AS ref_normalised,
+           concat_ws('/', company_code, fiscal_year, doc_number) AS doc_key
+    FROM inv
+    WHERE coalesce(reversal_doc, '') = '' AND amount >= $min_amount
+)
+SELECT concat_ws('|', a.vendor, a.doc_key, b.doc_key) AS exception_id,
+       a.vendor, round(a.amount, 2) AS amount,
+       a.doc_number AS first_document, a.invoice_date AS first_invoice_date, a.reference AS first_reference,
+       CASE WHEN a.clearing_doc IS NOT NULL THEN 'Cleared' ELSE 'Open' END AS first_status,
+       b.doc_number AS second_document, b.invoice_date AS second_invoice_date, b.reference AS second_reference,
+       CASE WHEN b.clearing_doc IS NOT NULL THEN 'Cleared' ELSE 'Open' END AS second_status,
+       abs(date_diff('day', a.invoice_date, b.invoice_date)) AS days_apart,
+       b.amount AS exception_value,
+       format('Same vendor and amount, invoice dates {} days apart, references differ',
+              abs(date_diff('day', a.invoice_date, b.invoice_date))) AS reason
+FROM n a
+JOIN n b ON a.vendor = b.vendor AND a.amount = b.amount AND a.doc_key < b.doc_key
+WHERE abs(date_diff('day', a.invoice_date, b.invoice_date)) <= $days_window
+  AND a.ref_normalised <> b.ref_normalised
+  AND greatest(a.posting_date, b.posting_date) BETWEEN $period_from AND $period_to
+ORDER BY a.amount DESC
+'''
+
+[test.params.invoice_doc_types]
+label = "Vendor invoice document types"
+default = ["KR", "RE"]
+[test.params.days_window]
+label = "Invoice dates within (days)"
+default = 7
+[test.params.min_amount]
+label = "Minimum invoice amount, Rs."
+default = 50000
+
+[[test]]
+id = "FIN-JELATE-01"
+title = "Entries made after the accounting period was closed"
+topics = ["T7A02"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.posting_date", "gl_items.entry_date", "gl_items.amount"]
+rule = """
+G/L documents with a posting date in the audit period whose system entry date is later
+than the period close date: last day of the posting month plus the close days (year-end
+close days for the last month of the financial year and special periods 13-16).
+"""
+interpretation = """
+Set the close days from the company's closing calendar. Year-end audit adjustments
+entered in special periods before the accounts are adopted can be legitimate.
+"""
+field_questions = [
+  "Who opened the closed period, on whose approval, and why?",
+  "What is the nature of the entry? Did it change reported results?",
+]
+records_required = "Period open / close log (OB52 change log), approval for posting in closed period, supporting vouchers"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n,
+       sum(CASE WHEN amount > 0 THEN amount END) AS value
+FROM gl_items WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, min(posting_date) AS posting_date, max(entry_date) AS entry_date,
+           max(posting_period) AS posting_period, any_value(user_name) AS user_name, any_value(tcode) AS tcode,
+           any_value(header_text) AS header_text,
+           sum(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS doc_value
+    FROM gl_items
+    WHERE posting_date BETWEEN $period_from AND $period_to
+    GROUP BY company_code, fiscal_year, doc_number
+),
+c AS (
+    SELECT *,
+           CASE WHEN month(posting_date) = $fy_end_month OR coalesce(posting_period, 0) > 12
+                THEN last_day(posting_date) + $year_end_close_days
+                ELSE last_day(posting_date) + $close_days END AS close_date
+    FROM d
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, posting_date, posting_period, entry_date,
+       close_date, date_diff('day', close_date, entry_date) AS days_after_close,
+       user_name, tcode, header_text, doc_value,
+       doc_value AS exception_value,
+       format('Entered on {}, {} days after the period close date {}', entry_date,
+              date_diff('day', close_date, entry_date), close_date) AS reason
+FROM c
+WHERE entry_date > close_date AND doc_value >= $min_value
+ORDER BY doc_value DESC
+'''
+
+[test.params.close_days]
+label = "Monthly close: days after month-end"
+default = 15
+[test.params.year_end_close_days]
+label = "Year-end close: days after year-end"
+default = 60
+[test.params.fy_end_month]
+label = "Last month of the financial year"
+default = 3
+[test.params.min_value]
+label = "Minimum document value, Rs."
+default = 0
+
+[[test]]
+id = "FIN-MANJE-01"
+title = "High-value manual journal entries"
+topics = ["T7A01", "T7A03"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.doc_type", "gl_items.posting_date", "gl_items.amount"]
+rule = """
+G/L documents in the audit period that are manual (document type or transaction code
+in the lists below) with a document value (sum of debits) at or above the threshold.
+"""
+interpretation = """
+Manual entries override automatic postings from sub-ledgers. Check each against its
+supporting voucher and approval (not visible remotely, OO-53 para 10).
+"""
+field_questions = [
+  "What is the supporting document and business reason for the entry?",
+  "Who prepared and who approved it? Was the approver competent for the value?",
+  "Why could the transaction not flow through the normal sub-ledger process?",
+]
+records_required = "Journal vouchers with supporting documents and approvals, user role list"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n,
+       sum(CASE WHEN amount > 0 THEN amount END) AS value
+FROM gl_items WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, any_value(tcode) AS tcode,
+           min(posting_date) AS posting_date, max(entry_date) AS entry_date,
+           any_value(user_name) AS user_name, any_value(header_text) AS header_text,
+           string_agg(DISTINCT gl_account, ', ') AS gl_accounts,
+           sum(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS doc_value
+    FROM gl_items
+    WHERE posting_date BETWEEN $period_from AND $period_to
+    GROUP BY company_code, fiscal_year, doc_number
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, tcode, posting_date, entry_date,
+       user_name, header_text, gl_accounts, doc_value,
+       doc_value AS exception_value,
+       format('Manual {} document of {}', coalesce(doc_type, tcode), round(doc_value, 2)) AS reason
+FROM d
+WHERE (list_contains($manual_doc_types, doc_type) OR list_contains($manual_tcodes, coalesce(tcode, '')))
+  AND doc_value >= $high_value
+ORDER BY doc_value DESC
+'''
+
+[test.params.high_value]
+label = "High value at or above, Rs."
+default = 1000000
+[test.params.manual_doc_types]
+label = "Manual document types"
+default = ["SA"]
+help = "SA = G/L account document. Add company-specific manual journal types."
+[test.params.manual_tcodes]
+label = "Manual posting transaction codes"
+default = ["FB01", "FB01L", "FB50", "FB50L", "F-02", "FBS1", "FB41"]
+
+[[test]]
+id = "FIN-SENSGL-01"
+title = "Manual postings to sensitive G/L accounts"
+topics = ["T7A04"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.gl_account", "gl_items.doc_type", "gl_items.posting_date", "gl_items.amount"]
+rule = """
+Manual G/L documents in the audit period (document type / transaction code as in
+FIN-MANJE-01) posting at least the minimum amount to any G/L account in the audit's
+list of sensitive accounts (provisions, write-backs, suspense, GR/IR, CWIP, bad debts,
+revenue adjustments and so on).
+"""
+interpretation = """
+This test needs criteria: the list of sensitive G/L accounts must be supplied from the
+company's chart of accounts. It is not executable until the list is set.
+"""
+field_questions = [
+  "What is the business reason for posting directly to this account?",
+  "Is direct posting to the account permitted by the accounting manual?",
+  "Who approved the entry?",
+]
+records_required = "Journal vouchers and approvals, accounting manual provisions for the account"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n, sum(abs(amount)) AS value
+FROM gl_items
+WHERE posting_date BETWEEN $period_from AND $period_to AND list_contains($sensitive_gls, gl_account)
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, any_value(tcode) AS tcode,
+           min(posting_date) AS posting_date, any_value(user_name) AS user_name,
+           any_value(header_text) AS header_text,
+           string_agg(DISTINCT CASE WHEN list_contains($sensitive_gls, gl_account) THEN gl_account END, ', ') AS sensitive_accounts,
+           sum(CASE WHEN list_contains($sensitive_gls, gl_account) THEN abs(amount) ELSE 0 END) AS sensitive_amount
+    FROM gl_items
+    WHERE posting_date BETWEEN $period_from AND $period_to
+    GROUP BY company_code, fiscal_year, doc_number
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, tcode, posting_date, user_name,
+       header_text, sensitive_accounts, sensitive_amount,
+       sensitive_amount AS exception_value,
+       format('Manual posting of {} to sensitive account(s) {}', round(sensitive_amount, 2), sensitive_accounts) AS reason
+FROM d
+WHERE sensitive_amount > 0 AND sensitive_amount >= $min_value
+  AND (list_contains($manual_doc_types, doc_type) OR list_contains($manual_tcodes, coalesce(tcode, '')))
+ORDER BY sensitive_amount DESC
+'''
+
+[test.params.sensitive_gls]
+label = "Sensitive G/L accounts"
+default = []
+required = true
+help = "Criteria to be supplied by audit from the company's chart of accounts."
+[test.params.min_value]
+label = "Minimum amount, Rs."
+default = 0
+[test.params.manual_doc_types]
+label = "Manual document types"
+default = ["SA"]
+[test.params.manual_tcodes]
+label = "Manual posting transaction codes"
+default = ["FB01", "FB01L", "FB50", "FB50L", "F-02", "FBS1", "FB41"]
+
+[[test]]
+id = "FIN-REV-01"
+title = "Reversed accounting documents"
+topics = ["T7A08"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.posting_date", "gl_items.amount", "gl_items.reversal_doc"]
+rule = """
+G/L documents posted in the audit period that were reversed ('Reversed with' filled),
+of value at or above the minimum. The reversing document's date, days to reversal and
+the number of reversed documents by the same user are shown. Where both documents
+point to each other, only the original is listed.
+"""
+interpretation = """
+Occasional reversals correct errors. Frequent reversals by the same user, reversals
+across a period end, or reversal-and-repost of the same amount deserve scrutiny.
+"""
+field_questions = [
+  "Why was the document reversed? Was it re-posted, and how?",
+  "Did the reversal move an amount across a period / year end?",
+  "Who reversed it, and was the reversal approved?",
+]
+records_required = "Original and reversal vouchers with reasons and approvals"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n,
+       sum(CASE WHEN amount > 0 THEN amount END) AS value
+FROM gl_items WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, min(posting_date) AS posting_date,
+           any_value(user_name) AS user_name, any_value(reversal_doc) AS reversal_doc,
+           any_value(reversal_reason) AS reversal_reason, any_value(header_text) AS header_text,
+           sum(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS doc_value
+    FROM gl_items
+    GROUP BY company_code, fiscal_year, doc_number
+),
+r AS (
+    SELECT company_code, doc_number, min(posting_date) AS reversal_posting_date, any_value(user_name) AS reversed_by
+    FROM d GROUP BY company_code, doc_number
+),
+o AS (
+    SELECT d.*, r.reversal_posting_date, r.reversed_by,
+           count(*) OVER (PARTITION BY d.user_name) AS reversed_docs_by_user
+    FROM d
+    LEFT JOIN r ON r.company_code IS NOT DISTINCT FROM d.company_code AND r.doc_number = d.reversal_doc
+    WHERE coalesce(d.reversal_doc, '') <> ''
+      AND (r.reversal_posting_date IS NULL
+           OR d.posting_date < r.reversal_posting_date
+           OR (d.posting_date = r.reversal_posting_date AND d.doc_number < d.reversal_doc))
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, posting_date, user_name, header_text,
+       reversal_doc, reversal_reason, reversal_posting_date, reversed_by,
+       date_diff('day', posting_date, reversal_posting_date) AS days_to_reversal,
+       reversed_docs_by_user, doc_value,
+       doc_value AS exception_value,
+       concat_ws('; ',
+           format('Reversed by document {}', reversal_doc),
+           CASE WHEN year(posting_date) <> year(reversal_posting_date) OR month(posting_date) <> month(reversal_posting_date)
+                THEN 'reversal in a later period' END
+       ) AS reason
+FROM o
+WHERE posting_date BETWEEN $period_from AND $period_to AND doc_value >= $min_value
+ORDER BY doc_value DESC
+'''
+
+[test.params.min_value]
+label = "Minimum document value, Rs."
+default = 100000
+
+[[test]]
+id = "FIN-ROUND-01"
+title = "Round-value manual journal entries"
+topics = ["T7B01"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.doc_type", "gl_items.posting_date", "gl_items.amount"]
+rule = """
+Manual G/L documents in the audit period whose document value is at or above the
+minimum and an exact multiple of the rounding unit (e.g. Rs. 1 lakh).
+"""
+interpretation = """
+Round amounts suggest estimates or adjustments rather than transactions with source
+documents. Provisions are often legitimately round; check the basis of estimate.
+"""
+field_questions = [
+  "What is the basis of the amount? Is it an estimate?",
+  "Is the entry reversed or trued-up later?",
+]
+records_required = "Journal vouchers, basis of estimate / working, approvals"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n,
+       sum(CASE WHEN amount > 0 THEN amount END) AS value
+FROM gl_items WHERE posting_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, any_value(tcode) AS tcode,
+           min(posting_date) AS posting_date, any_value(user_name) AS user_name,
+           any_value(header_text) AS header_text, string_agg(DISTINCT gl_account, ', ') AS gl_accounts,
+           round(sum(CASE WHEN amount > 0 THEN amount ELSE 0 END), 2) AS doc_value
+    FROM gl_items
+    WHERE posting_date BETWEEN $period_from AND $period_to
+    GROUP BY company_code, fiscal_year, doc_number
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, tcode, posting_date, user_name,
+       header_text, gl_accounts, doc_value,
+       doc_value AS exception_value,
+       format('Round value {} (multiple of {})', doc_value, $round_unit) AS reason
+FROM d
+WHERE (list_contains($manual_doc_types, doc_type) OR list_contains($manual_tcodes, coalesce(tcode, '')))
+  AND doc_value >= $min_value
+  AND doc_value = round(doc_value / $round_unit, 0) * $round_unit
+ORDER BY doc_value DESC
+'''
+
+[test.params.round_unit]
+label = "Rounding unit, Rs."
+default = 100000
+[test.params.min_value]
+label = "Minimum document value, Rs."
+default = 500000
+[test.params.manual_doc_types]
+label = "Manual document types"
+default = ["SA"]
+[test.params.manual_tcodes]
+label = "Manual posting transaction codes"
+default = ["FB01", "FB01L", "FB50", "FB50L", "F-02", "FBS1", "FB41"]
+
+[[test]]
+id = "FIN-HOLIDAY-01"
+title = "Manual entries made on weekly offs or holidays"
+topics = ["T7B02"]
+exception_unit = "documents"
+requires = ["gl_items.doc_number", "gl_items.doc_type", "gl_items.entry_date", "gl_items.amount"]
+rule = """
+G/L documents entered (system entry date) in the audit period on a weekly off or on a
+date in the holiday list; manual documents only unless chosen otherwise.
+"""
+interpretation = """
+The entry date is the date the document was keyed in, not the posting date. Year-end
+closing work on holidays is common; look for patterns by user.
+"""
+field_questions = [
+  "Was the office working that day (closing, special order)?",
+  "Was the user authorised to work that day? Does the entry have supporting documents?",
+]
+records_required = "Office orders for holiday working, journal vouchers, user access logs"
+population_sql = '''
+SELECT count(DISTINCT concat_ws('/', company_code, fiscal_year, doc_number)) AS n,
+       sum(CASE WHEN amount > 0 THEN amount END) AS value
+FROM gl_items WHERE entry_date BETWEEN $period_from AND $period_to
+'''
+sql = '''
+WITH d AS (
+    SELECT company_code, fiscal_year, doc_number,
+           any_value(doc_type) AS doc_type, any_value(tcode) AS tcode,
+           min(posting_date) AS posting_date, max(entry_date) AS entry_date,
+           any_value(user_name) AS user_name, any_value(header_text) AS header_text,
+           sum(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS doc_value
+    FROM gl_items
+    WHERE entry_date BETWEEN $period_from AND $period_to
+    GROUP BY company_code, fiscal_year, doc_number
+),
+h AS (
+    SELECT date, string_agg(coalesce(description, 'holiday'), ', ') AS holiday
+    FROM holidays GROUP BY date
+),
+j AS (
+    SELECT d.*, h.holiday,
+           list_contains($weekly_offs, dayofweek(d.entry_date)) AS is_weekly_off,
+           $second_fourth_saturday AND dayofweek(d.entry_date) = 6
+               AND ((day(d.entry_date) - 1) // 7 + 1) IN (2, 4) AS is_2nd_4th_saturday
+    FROM d LEFT JOIN h ON h.date = d.entry_date
+    WHERE NOT $manual_only
+       OR list_contains($manual_doc_types, d.doc_type)
+       OR list_contains($manual_tcodes, coalesce(d.tcode, ''))
+)
+SELECT concat_ws('/', company_code, fiscal_year, doc_number) AS exception_id,
+       company_code, fiscal_year, doc_number, doc_type, tcode, posting_date, entry_date,
+       strftime(entry_date, '%A') AS entry_weekday, holiday, user_name, header_text, doc_value,
+       doc_value AS exception_value,
+       CASE WHEN holiday IS NOT NULL THEN format('Entered on holiday: {}', holiday)
+            WHEN is_2nd_4th_saturday THEN 'Entered on 2nd / 4th Saturday'
+            ELSE format('Entered on weekly off ({})', strftime(entry_date, '%A')) END AS reason
+FROM j
+WHERE (holiday IS NOT NULL OR is_weekly_off OR is_2nd_4th_saturday) AND doc_value >= $min_value
+ORDER BY doc_value DESC
+'''
+
+[test.params.weekly_offs]
+label = "Weekly offs (0 = Sunday ... 6 = Saturday)"
+default = [0]
+[test.params.second_fourth_saturday]
+label = "Treat 2nd and 4th Saturdays as holidays"
+default = false
+[test.params.manual_only]
+label = "Manual documents only"
+default = true
+[test.params.min_value]
+label = "Minimum document value, Rs."
+default = 0
+[test.params.manual_doc_types]
+label = "Manual document types"
+default = ["SA"]
+[test.params.manual_tcodes]
+label = "Manual posting transaction codes"
+default = ["FB01", "FB01L", "FB50", "FB50L", "F-02", "FBS1", "FB41"]
+
+[[test]]
+id = "FIN-ADV-01"
+title = "Long-pending advances to vendors"
+topics = ["T7B05"]
+exception_unit = "advance items"
+requires = ["vendor_items.vendor", "vendor_items.doc_number", "vendor_items.posting_date", "vendor_items.amount", "vendor_items.special_gl"]
+rule = """
+Vendor special G/L items of the advance indicators listed below (A = down payment,
+M = mobilisation advance where so configured), posted on or before the cut-off, still
+open at the cut-off and older than 'pending days'.
+"""
+interpretation = """
+Advances should be adjusted against bills as supplies / work progress. Long-pending
+advances may be irrecoverable or may not carry the interest the contract provides.
+"""
+field_questions = [
+  "Against which contract was the advance paid, and what is the adjustment schedule?",
+  "Is it secured by a bank guarantee? Is the BG still valid?",
+  "Is interest recoverable on the advance under the contract? Was it recovered?",
+]
+records_required = "Contract advance clause, BG register, adjustment schedule, vendor ledger"
+population_sql = '''
+SELECT count(*) AS n, sum(abs(amount)) AS value
+FROM vendor_items
+WHERE list_contains($advance_indicators, coalesce(special_gl, '')) AND posting_date <= $cutoff_date
+  AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
+'''
+sql = '''
+SELECT concat_ws('/', company_code, fiscal_year, doc_number, vendor) AS exception_id,
+       company_code, vendor, doc_number, fiscal_year, doc_type, special_gl, posting_date,
+       reference, text, amount,
+       date_diff('day', posting_date, $cutoff_date) AS days_outstanding,
+       abs(amount) AS exception_value,
+       format('Advance outstanding {} days at cut-off', date_diff('day', posting_date, $cutoff_date)) AS reason
+FROM vendor_items
+WHERE list_contains($advance_indicators, coalesce(special_gl, ''))
+  AND posting_date <= $cutoff_date
+  AND (clearing_date IS NULL OR clearing_date > $cutoff_date)
+  AND date_diff('day', posting_date, $cutoff_date) > $pending_days
+  AND abs(amount) >= $min_value
+ORDER BY exception_value DESC
+'''
+
+[test.params.pending_days]
+label = "Pending beyond (days)"
+default = 180
+[test.params.min_value]
+label = "Minimum amount, Rs."
+default = 0
+[test.params.advance_indicators]
+label = "Special G/L indicators for advances"
+default = ["A", "M"]

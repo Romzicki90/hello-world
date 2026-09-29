@@ -1,0 +1,587 @@
+# Analytic tests: Business Process 1, Procurement & Contract Management
+#
+# Conventions for every test in the library (see README "Writing a test"):
+#   * SQL runs in DuckDB against the standard datasets (datasets.toml).
+#   * It must return the columns exception_id, exception_value and reason;
+#     optional audit_unit feeds the "Units/Departments proposed" column of
+#     Annexure-II. Count of exceptions = distinct exception_id; value
+#     involved = sum of exception_value.
+#   * $period_from, $period_to and $cutoff_date come from the run profile;
+#     every other $name is a parameter declared under [test.params.name].
+
+[[test]]
+id = "PRC-SPLIT-01"
+title = "Possible split purchase orders"
+topics = ["T1A01"]
+exception_unit = "clusters"
+requires = ["po_items.po_number", "po_items.vendor", "po_items.po_date", "po_items.net_value"]
+rule = """
+POs placed in the audit period are grouped by vendor + plant + material (material group
+where the material code is blank). Only POs whose total value is below the threshold are
+considered. Within each group, POs no more than 'window' days apart form a cluster (a gap
+longer than the window starts a new cluster). A cluster is an exception when it has at
+least 'minimum POs' and its combined value reaches the threshold, i.e. the requirement
+could have been procured in one PO that would have needed the higher approval / tender.
+"""
+interpretation = """
+A cluster is a red flag for splitting, not proof. Legitimate reasons include genuinely
+separate indents, emergency requirements and rate-contract call-offs. Set the threshold
+from the company's Delegation of Powers / tender limits for the procurement mode concerned.
+"""
+field_questions = [
+  "Were the indents for the clustered POs raised separately, or was one requirement split?",
+  "Which authority approved each PO, and which authority would have approved the combined value?",
+  "Would the combined value have required limited / open tender?",
+]
+records_required = "Indents / PRs, note-sheets and approvals for each PO in the cluster, tender files, DoP extract applicable on the PO dates"
+
+population_sql = '''
+SELECT count(DISTINCT po_number) AS n, sum(net_value) AS value
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH items AS (
+    SELECT po_number, vendor, vendor_name, coalesce(plant, '') AS plant, po_date, net_value, purch_group,
+           coalesce(nullif(material, ''), 'MG:' || coalesce(material_group, '?')) AS item_key,
+           coalesce(short_text, material_group) AS item_text
+    FROM po_items
+    WHERE po_date BETWEEN $period_from AND $period_to
+      AND coalesce(deletion_flag, '') = ''
+      AND vendor IS NOT NULL
+),
+po_total AS (
+    SELECT po_number, sum(net_value) AS po_value FROM items GROUP BY po_number
+),
+po_key AS (
+    SELECT i.vendor, i.plant, i.item_key, i.po_number,
+           min(i.po_date) AS po_date, sum(i.net_value) AS key_value,
+           any_value(t.po_value) AS po_value, any_value(i.item_text) AS item_text,
+           any_value(i.vendor_name) AS vendor_name, any_value(i.purch_group) AS purch_group
+    FROM items i JOIN po_total t USING (po_number)
+    WHERE t.po_value < $threshold
+    GROUP BY i.vendor, i.plant, i.item_key, i.po_number
+),
+marked AS (
+    SELECT *,
+           CASE WHEN date_diff('day', lag(po_date) OVER w, po_date) <= $window_days THEN 0 ELSE 1 END AS starts_cluster
+    FROM po_key
+    WINDOW w AS (PARTITION BY vendor, plant, item_key ORDER BY po_date, po_number)
+),
+clustered AS (
+    SELECT *,
+           sum(starts_cluster) OVER (PARTITION BY vendor, plant, item_key ORDER BY po_date, po_number
+                                     ROWS UNBOUNDED PRECEDING) AS cluster_no
+    FROM marked
+),
+clusters AS (
+    SELECT vendor, plant, item_key, cluster_no,
+           count(*) AS pos_in_cluster, sum(key_value) AS cluster_value,
+           min(po_date) AS first_po_date, max(po_date) AS last_po_date
+    FROM clustered
+    GROUP BY vendor, plant, item_key, cluster_no
+    HAVING count(*) >= $min_pos AND sum(key_value) >= $threshold
+)
+SELECT concat_ws('|', c.vendor, c.plant, c.item_key, c.cluster_no) AS exception_id,
+       c.vendor, k.vendor_name, c.plant, c.item_key, k.item_text,
+       k.po_number, k.po_date, k.po_value, k.key_value AS value_of_item_in_po,
+       c.pos_in_cluster, c.cluster_value, c.first_po_date, c.last_po_date,
+       date_diff('day', c.first_po_date, c.last_po_date) AS cluster_span_days,
+       k.key_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || nullif(c.plant, ''), 'PGr ' || k.purch_group) AS audit_unit,
+       format('{} POs within {} days, each below the threshold, together {} (threshold {})',
+              c.pos_in_cluster, date_diff('day', c.first_po_date, c.last_po_date),
+              round(c.cluster_value, 2), $threshold) AS reason
+FROM clusters c
+JOIN clustered k USING (vendor, plant, item_key, cluster_no)
+ORDER BY c.cluster_value DESC, exception_id, k.po_date, k.po_number
+'''
+
+[test.params.threshold]
+label = "Threshold (DoP / tender limit), Rs."
+default = 1000000
+help = "Value above which the higher approval or tender mode applies. Take it from the company's DoP."
+[test.params.window_days]
+label = "Clustering window (days)"
+default = 30
+[test.params.min_pos]
+label = "Minimum POs in a cluster"
+default = 2
+
+[[test]]
+id = "PRC-NOPR-01"
+title = "PO items without a purchase requisition reference"
+topics = ["T1A02"]
+exception_unit = "PO items"
+requires = ["po_items.po_number", "po_items.po_date", "po_items.net_value", "po_items.pr_number"]
+rule = """
+PO items in the audit period (not deleted) with no purchase requisition number in the ERP,
+value at or above the minimum, excluding PO document types the company legitimately
+raises without a PR (for example rate-contract call-offs or service entry types).
+"""
+interpretation = """
+OO-53 para 10: absence of a PR reference in the ERP does not by itself prove that the
+procurement was unapproved; an offline indent may exist. Verify in the field.
+"""
+field_questions = [
+  "Is there an approved indent / requisition outside the ERP for this PO?",
+  "Who approved the procurement, and was that authority competent for the value?",
+  "Is this document type configured to skip the PR, and on whose approval?",
+]
+records_required = "Indent / requisition file, note-sheet approvals, DoP extract, document-type configuration note"
+
+population_sql = '''
+SELECT count(*) AS n, sum(net_value) AS value
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+SELECT concat_ws('/', po_number, po_item) AS exception_id,
+       po_number, po_item, doc_type, po_date, vendor, vendor_name, material, short_text,
+       plant, purch_group, net_value,
+       net_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || plant, 'PGr ' || purch_group) AS audit_unit,
+       'No purchase requisition referenced on the PO item in the ERP extract' AS reason
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to
+  AND coalesce(pr_number, '') = ''
+  AND coalesce(deletion_flag, '') = ''
+  AND net_value >= $min_value
+  AND NOT list_contains($exclude_doc_types, coalesce(doc_type, ''))
+ORDER BY net_value DESC
+'''
+
+[test.params.min_value]
+label = "Minimum PO item value, Rs."
+default = 100000
+[test.params.exclude_doc_types]
+label = "PO document types to exclude (e.g. rate-contract call-offs)"
+default = []
+
+[[test]]
+id = "PRC-POAFTGR-01"
+title = "Purchase orders created after the goods receipt"
+topics = ["T1A03"]
+exception_unit = "POs"
+requires = ["po_items.po_number", "po_items.net_value", "material_docs.po_number", "material_docs.movement_type", "material_docs.posting_date"]
+requires_any = [["po_items.created_on", "po_items.po_date"]]
+rule = """
+For each PO, the earliest goods-receipt posting (movement types set below) is compared
+with the PO creation date (system 'Created on' date; the PO document date is used only
+if 'Created on' is not in the extract). An exception is a PO created more than the
+tolerance days after its first goods receipt: post-facto regularisation.
+"""
+interpretation = """
+Use the system 'Created on' date wherever possible; the PO document date can be
+back-dated. Emergency procurement with a later PO may be permitted by the purchase
+manual. Verify the approval for the emergency.
+"""
+field_questions = [
+  "Why were the goods received before the PO was placed?",
+  "Was the post-facto PO approved by the competent authority as an emergency purchase?",
+  "Were rates negotiated before the supply, or accepted after it?",
+]
+records_required = "Delivery challans / GRN, PO file with note-sheets, emergency-purchase approvals"
+
+population_sql = '''
+SELECT count(DISTINCT po_number) AS n, sum(net_value) AS value
+FROM po_items
+WHERE coalesce(created_on, po_date) BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH po AS (
+    SELECT po_number, any_value(vendor) AS vendor, any_value(vendor_name) AS vendor_name,
+           min(po_date) AS po_date, min(created_on) AS created_on, sum(net_value) AS po_value,
+           any_value(plant) AS plant, any_value(purch_group) AS purch_group
+    FROM po_items
+    WHERE coalesce(deletion_flag, '') = ''
+    GROUP BY po_number
+),
+gr AS (
+    SELECT po_number, min(posting_date) AS first_gr_date, count(DISTINCT mat_doc) AS gr_documents
+    FROM material_docs
+    WHERE list_contains($gr_movements, movement_type) AND po_number IS NOT NULL
+    GROUP BY po_number
+)
+SELECT po.po_number AS exception_id,
+       po.po_number, po.vendor, po.vendor_name, po.po_date, po.created_on,
+       CASE WHEN po.created_on IS NOT NULL THEN 'System created-on date' ELSE 'PO document date' END AS po_date_basis,
+       gr.first_gr_date, gr.gr_documents,
+       date_diff('day', gr.first_gr_date, coalesce(po.created_on, po.po_date)) AS days_gr_before_po,
+       po.po_value, po.plant, po.purch_group,
+       po.po_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || po.plant, 'PGr ' || po.purch_group) AS audit_unit,
+       format('First GR on {}, PO created on {} ({} days later)', gr.first_gr_date,
+              coalesce(po.created_on, po.po_date),
+              date_diff('day', gr.first_gr_date, coalesce(po.created_on, po.po_date))) AS reason
+FROM po JOIN gr USING (po_number)
+WHERE coalesce(po.created_on, po.po_date) BETWEEN $period_from AND $period_to
+  AND date_diff('day', gr.first_gr_date, coalesce(po.created_on, po.po_date)) > $tolerance_days
+ORDER BY po.po_value DESC
+'''
+
+[test.params.gr_movements]
+label = "Goods-receipt movement types"
+default = ["101", "103"]
+[test.params.tolerance_days]
+label = "Tolerance (days)"
+default = 0
+
+[[test]]
+id = "PRC-OPEN-01"
+title = "Long-pending open purchase orders"
+topics = ["T1A07"]
+exception_unit = "PO items"
+requires = ["po_items.po_number", "po_items.po_date", "po_items.open_value"]
+rule = """
+PO items, not deleted and not marked delivery-completed, that still have an undelivered
+value at the cut-off date and whose delivery date (PO date where no delivery date is
+available) is more than 'pending days' before the cut-off.
+"""
+interpretation = """
+Take ME2N with selection parameter WE101 as close to the cut-off as possible. Open
+quantities may be legitimately pending under long-term or rate contracts.
+"""
+field_questions = [
+  "Why has the supply not been received or the PO not been closed?",
+  "Has the requirement lapsed? Is budget / fund remaining blocked against the PO?",
+  "Were extensions of delivery period granted, and were LD / risk-purchase clauses invoked?",
+]
+records_required = "PO file, delivery-period extension approvals, correspondence with vendor, LD recovery records"
+
+population_sql = '''
+SELECT count(*) AS n, sum(open_value) AS value
+FROM po_items
+WHERE coalesce(deletion_flag, '') = '' AND coalesce(open_value, 0) > 0
+'''
+sql = '''
+SELECT concat_ws('/', po_number, po_item) AS exception_id,
+       po_number, po_item, po_date, delivery_date, vendor, vendor_name, material, short_text,
+       plant, purch_group, open_qty, open_value,
+       date_diff('day', coalesce(delivery_date, po_date), $cutoff_date) AS days_pending,
+       open_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || plant, 'PGr ' || purch_group) AS audit_unit,
+       format('Undelivered value {} pending {} days after the {} at cut-off',
+              round(open_value, 2), date_diff('day', coalesce(delivery_date, po_date), $cutoff_date),
+              CASE WHEN delivery_date IS NULL THEN 'PO date' ELSE 'delivery date' END) AS reason
+FROM po_items
+WHERE coalesce(deletion_flag, '') = ''
+  AND coalesce(delivery_completed, '') = ''
+  AND coalesce(open_value, 0) > $min_open_value
+  AND date_diff('day', coalesce(delivery_date, po_date), $cutoff_date) > $pending_days
+ORDER BY open_value DESC
+'''
+
+[test.params.pending_days]
+label = "Pending beyond (days after delivery date)"
+default = 180
+[test.params.min_open_value]
+label = "Minimum open value, Rs."
+default = 0
+
+[[test]]
+id = "PRC-PRICEVAR-01"
+title = "Significant price variation for the same material"
+topics = ["T1A08"]
+exception_unit = "PO items"
+requires = ["po_items.po_number", "po_items.po_date", "po_items.material", "po_items.net_price", "po_items.quantity"]
+rule = """
+For each material (and order unit) bought at least 'minimum orders' times in the audit
+period, the median unit price is computed. PO items with a unit price more than the
+variance % above the median are exceptions. Value involved = (unit price - median) x
+quantity, i.e. the excess paid compared with the median.
+"""
+interpretation = """
+Price differences can be legitimate (different specifications, delivery terms, urgency,
+quantity, market movement over the year). Compare the specifications before concluding.
+"""
+field_questions = [
+  "Were the specifications, delivery terms and taxes identical?",
+  "Why was the higher-priced PO not placed at the lower rate available?",
+  "Were last purchase prices considered in the price reasonableness analysis?",
+]
+records_required = "Tender / quotation comparison, price reasonableness note, specifications, last purchase price history"
+
+population_sql = '''
+SELECT count(*) AS n, sum(net_value) AS value
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = '' AND material IS NOT NULL
+'''
+sql = '''
+WITH p AS (
+    SELECT po_number, po_item, po_date, vendor, vendor_name, material, short_text, order_unit,
+           plant, purch_group, quantity,
+           net_price / coalesce(nullif(price_unit, 0), 1) AS unit_price
+    FROM po_items
+    WHERE po_date BETWEEN $period_from AND $period_to
+      AND coalesce(deletion_flag, '') = ''
+      AND material IS NOT NULL AND net_price > 0 AND quantity > 0
+),
+s AS (
+    SELECT material, coalesce(order_unit, '') AS ou,
+           median(unit_price) AS median_price, min(unit_price) AS lowest_price, count(*) AS orders
+    FROM p
+    GROUP BY material, coalesce(order_unit, '')
+    HAVING count(*) >= $min_orders
+)
+SELECT concat_ws('/', p.po_number, p.po_item) AS exception_id,
+       p.po_number, p.po_item, p.po_date, p.vendor, p.vendor_name, p.material, p.short_text,
+       p.order_unit, p.quantity, round(p.unit_price, 2) AS unit_price,
+       round(s.median_price, 2) AS median_price, round(s.lowest_price, 2) AS lowest_price, s.orders,
+       round((p.unit_price / s.median_price - 1) * 100, 1) AS pct_above_median,
+       (p.unit_price - s.median_price) * p.quantity AS exception_value,
+       concat_ws(' / ', 'Plant ' || p.plant, 'PGr ' || p.purch_group) AS audit_unit,
+       format('Unit price {}% above the median of {} POs for this material',
+              round((p.unit_price / s.median_price - 1) * 100, 1), s.orders) AS reason
+FROM p JOIN s ON p.material = s.material AND coalesce(p.order_unit, '') = s.ou
+WHERE p.unit_price > s.median_price * (1 + $variance_pct / 100.0)
+ORDER BY exception_value DESC
+'''
+
+[test.params.variance_pct]
+label = "Variance above median, %"
+default = 25
+[test.params.min_orders]
+label = "Minimum POs per material"
+default = 3
+
+[[test]]
+id = "PRC-NEWVEN-01"
+title = "POs to newly created or blocked vendors"
+topics = ["T1A06"]
+exception_unit = "POs"
+requires = ["po_items.po_number", "po_items.vendor", "po_items.po_date", "po_items.net_value", "vendor_master.vendor", "vendor_master.created_on"]
+rule = """
+POs in the audit period placed on a vendor (a) within 'new vendor days' of the vendor
+master being created, including POs dated before the vendor was created, or (b) whose
+vendor master currently carries a posting block, purchasing block or deletion flag.
+"""
+interpretation = """
+Block and deletion flags are as on the date the vendor master was extracted, not as on
+the PO date; confirm the status on the PO date from the change log in the field.
+"""
+field_questions = [
+  "How was the new vendor registered and evaluated before the PO?",
+  "Was the vendor blocked on the PO date? Who released the PO despite the block?",
+  "Is the vendor related to any other vendor or employee (address, bank account, PAN)?",
+]
+records_required = "Vendor registration file, vendor master change log (XK04 / BP), PO approvals, vendor evaluation"
+
+population_sql = '''
+SELECT count(DISTINCT po_number) AS n, sum(net_value) AS value
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH po AS (
+    SELECT po_number, any_value(vendor) AS vendor, min(po_date) AS po_date, sum(net_value) AS po_value,
+           any_value(plant) AS plant, any_value(purch_group) AS purch_group
+    FROM po_items
+    WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+    GROUP BY po_number
+),
+j AS (
+    SELECT po.*, v.vendor_name, v.created_on AS vendor_created_on,
+           v.posting_block, v.purchasing_block, v.deletion_flag,
+           date_diff('day', v.created_on, po.po_date) AS days_after_vendor_creation
+    FROM po JOIN vendor_master v ON v.vendor = po.vendor
+)
+SELECT po_number AS exception_id,
+       po_number, po_date, vendor, vendor_name, vendor_created_on, days_after_vendor_creation,
+       posting_block, purchasing_block, deletion_flag, po_value, plant, purch_group,
+       po_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || plant, 'PGr ' || purch_group) AS audit_unit,
+       concat_ws('; ',
+           CASE WHEN days_after_vendor_creation < 0 THEN 'PO dated before the vendor master was created' END,
+           CASE WHEN days_after_vendor_creation BETWEEN 0 AND $new_vendor_days
+                THEN format('PO {} days after vendor creation', days_after_vendor_creation) END,
+           CASE WHEN coalesce(posting_block, '') <> '' THEN 'vendor has posting block (status at extraction)' END,
+           CASE WHEN coalesce(purchasing_block, '') <> '' THEN 'vendor has purchasing block (status at extraction)' END,
+           CASE WHEN coalesce(deletion_flag, '') <> '' THEN 'vendor flagged for deletion (status at extraction)' END
+       ) AS reason
+FROM j
+WHERE po_value >= $min_value
+  AND (days_after_vendor_creation <= $new_vendor_days
+       OR coalesce(posting_block, '') <> ''
+       OR coalesce(purchasing_block, '') <> ''
+       OR coalesce(deletion_flag, '') <> '')
+ORDER BY po_value DESC
+'''
+
+[test.params.new_vendor_days]
+label = "PO within days of vendor creation"
+default = 90
+[test.params.min_value]
+label = "Minimum PO value, Rs."
+default = 0
+
+[[test]]
+id = "PRC-GRIR-01"
+title = "Invoiced quantity or value exceeds goods received"
+topics = ["T1A10"]
+exception_unit = "PO items"
+requires = ["grir.po_number", "grir.qty_received", "grir.qty_invoiced"]
+rule = """
+PO items where the quantity invoiced exceeds the quantity received by more than the
+quantity tolerance, or the value invoiced exceeds the value received by more than the
+value tolerance. Value involved = value invoiced minus value received.
+"""
+interpretation = """
+Invoice ahead of receipt may indicate payment for goods not received. Timing differences
+at the cut-off (goods in transit) and price-variance postings explain some cases.
+"""
+field_questions = [
+  "Were the invoiced goods actually received and taken on stock?",
+  "Was payment released against the excess invoice, and has it been recovered?",
+  "Why did the three-way match not block the invoice?",
+]
+records_required = "GRNs, invoices, MIRO / payment documents, invoice-verification tolerance settings"
+
+population_sql = '''
+SELECT count(*) AS n, sum(value_invoiced) AS value FROM grir
+'''
+sql = '''
+SELECT concat_ws('/', po_number, po_item) AS exception_id,
+       po_number, po_item, vendor, material, plant,
+       qty_received, qty_invoiced, qty_invoiced - qty_received AS excess_qty,
+       value_received, value_invoiced,
+       greatest(coalesce(value_invoiced, 0) - coalesce(value_received, 0), 0) AS exception_value,
+       'Plant ' || plant AS audit_unit,
+       concat_ws('; ',
+           CASE WHEN coalesce(qty_invoiced, 0) - coalesce(qty_received, 0) > $qty_tolerance
+                THEN format('Invoiced quantity exceeds received by {}', qty_invoiced - qty_received) END,
+           CASE WHEN coalesce(value_invoiced, 0) - coalesce(value_received, 0) > $value_tolerance
+                THEN format('Invoiced value exceeds received by {}', round(value_invoiced - value_received, 2)) END
+       ) AS reason
+FROM grir
+WHERE coalesce(qty_invoiced, 0) - coalesce(qty_received, 0) > $qty_tolerance
+   OR coalesce(value_invoiced, 0) - coalesce(value_received, 0) > $value_tolerance
+ORDER BY exception_value DESC
+'''
+
+[test.params.qty_tolerance]
+label = "Quantity tolerance"
+default = 0
+[test.params.value_tolerance]
+label = "Value tolerance, Rs."
+default = 1000
+
+[[test]]
+id = "PRC-VENCON-01"
+title = "Vendor concentration within material groups"
+topics = ["T1B01"]
+exception_unit = "material groups"
+requires = ["po_items.po_number", "po_items.vendor", "po_items.po_date", "po_items.net_value", "po_items.material_group"]
+rule = """
+For each material group with procurement of at least the minimum value in the audit
+period, any vendor holding a share at or above the threshold % of the group's PO value is
+an exception. Optionally restrict to a list of critical material groups.
+"""
+interpretation = """
+Concentration may reflect proprietary items, OEM spares or a rate contract. It is a
+competition and dependence risk indicator, not a finding by itself.
+"""
+field_questions = [
+  "Is the item proprietary / OEM? Is the PAC certificate valid?",
+  "How many vendors are registered for the group, and how many bid?",
+  "Were efforts made to develop alternative sources?",
+]
+records_required = "Vendor registration list for the group, tender participation, PAC certificates"
+
+population_sql = '''
+SELECT count(DISTINCT material_group) AS n, sum(net_value) AS value
+FROM po_items
+WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH s AS (
+    SELECT coalesce(material_group, '(blank)') AS material_group, vendor,
+           any_value(vendor_name) AS vendor_name, count(DISTINCT po_number) AS pos,
+           sum(net_value) AS vendor_value
+    FROM po_items
+    WHERE po_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+    GROUP BY coalesce(material_group, '(blank)'), vendor
+),
+t AS (
+    SELECT material_group, sum(vendor_value) AS group_value, count(*) AS vendors_in_group
+    FROM s GROUP BY material_group
+)
+SELECT s.material_group AS exception_id,
+       s.material_group, s.vendor, s.vendor_name, s.pos, s.vendor_value,
+       t.group_value, t.vendors_in_group,
+       round(100 * s.vendor_value / t.group_value, 1) AS share_pct,
+       s.vendor_value AS exception_value,
+       format('Vendor holds {}% of material group procurement ({} vendors in group)',
+              round(100 * s.vendor_value / t.group_value, 1), t.vendors_in_group) AS reason
+FROM s JOIN t USING (material_group)
+WHERE t.group_value >= $min_group_value
+  AND 100 * s.vendor_value / t.group_value >= $share_pct
+  AND (len($material_groups) = 0 OR list_contains($material_groups, s.material_group))
+ORDER BY s.vendor_value DESC
+'''
+
+[test.params.share_pct]
+label = "Vendor share at or above, %"
+default = 60
+[test.params.min_group_value]
+label = "Minimum material-group value, Rs."
+default = 5000000
+[test.params.material_groups]
+label = "Restrict to material groups (blank = all)"
+default = []
+
+[[test]]
+id = "PRC-LATE-01"
+title = "Delayed deliveries (check levy of liquidated damages)"
+topics = ["T1B03"]
+exception_unit = "PO items"
+requires = ["po_items.po_number", "po_items.po_item", "po_items.delivery_date", "po_items.net_value", "material_docs.po_number", "material_docs.po_item", "material_docs.movement_type", "material_docs.posting_date"]
+rule = """
+PO items whose last goods receipt in the audit period was posted more than the grace
+days after the scheduled delivery date on the PO.
+"""
+interpretation = """
+The ERP shows the delay; whether LD was leviable and recovered depends on the contract
+terms and any extension granted, which must be seen in the field.
+"""
+field_questions = [
+  "Was the delivery period extended? With or without LD, and by whom?",
+  "Was LD deducted from the vendor's bill? Where is the recovery accounted?",
+  "Was the delay attributable to the purchaser?",
+]
+records_required = "PO / contract LD clause, extension approvals, bill passing records showing LD deduction"
+
+population_sql = '''
+SELECT count(*) AS n, sum(net_value) AS value
+FROM po_items
+WHERE delivery_date BETWEEN $period_from AND $period_to AND coalesce(deletion_flag, '') = ''
+'''
+sql = '''
+WITH gr AS (
+    SELECT po_number, po_item, max(posting_date) AS last_gr_date
+    FROM material_docs
+    WHERE list_contains($gr_movements, movement_type)
+    GROUP BY po_number, po_item
+)
+SELECT concat_ws('/', p.po_number, p.po_item) AS exception_id,
+       p.po_number, p.po_item, p.vendor, p.vendor_name, p.material, p.short_text, p.plant,
+       p.delivery_date, gr.last_gr_date,
+       date_diff('day', p.delivery_date, gr.last_gr_date) AS days_late, p.net_value,
+       p.net_value AS exception_value,
+       concat_ws(' / ', 'Plant ' || p.plant, 'PGr ' || p.purch_group) AS audit_unit,
+       format('Last goods receipt {} days after the scheduled delivery date; check LD levy',
+              date_diff('day', p.delivery_date, gr.last_gr_date)) AS reason
+FROM po_items p
+JOIN gr ON gr.po_number = p.po_number AND gr.po_item = p.po_item
+WHERE gr.last_gr_date BETWEEN $period_from AND $period_to
+  AND coalesce(p.deletion_flag, '') = ''
+  AND date_diff('day', p.delivery_date, gr.last_gr_date) > $grace_days
+ORDER BY p.net_value DESC
+'''
+
+[test.params.grace_days]
+label = "Grace period (days)"
+default = 30
+[test.params.gr_movements]
+label = "Goods-receipt movement types"
+default = ["101", "103"]

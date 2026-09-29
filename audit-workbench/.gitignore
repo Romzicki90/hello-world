@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+# never commit real audit data or outputs
+output/
+extracts/
+criteria/
+*.xlsx
+*.xls
+*.csv
+*.tsv

@@ -1,0 +1,222 @@
+# Annexure-I: Indicative Master Catalogue of Data-Driven Audit Topics
+# (Office Circular No. 53/AMG/AAP/2026-27 dated 24.07.2026, DGA (Steel), Ranchi)
+#
+# ID RULES (for the Data Analytics Cell as custodian of the catalogue, OO-53 para 12)
+#   * A topic ID is permanent. It was assigned from the 2026-27 serial numbers
+#     (T<business process><A = Priority-I | B = Priority-II><serial>) but it is
+#     NOT a serial number: when the catalogue is revised, update `annex_ref`,
+#     `priority` and `title`, never the `id`.
+#   * A new topic takes the next unused number in its business process.
+#   * Company-specific topics (OO-53 para 6) use TCSnn.
+#   * A withdrawn topic is marked `withdrawn = true`, not deleted, so that old
+#     working papers still resolve.
+#
+# mode      default mode of analysis for Tier-A companies (OO-53 para 4):
+#           topics that need change logs / document modification history,
+#           condition-level pricing, or HR/payroll data are "On-site".
+# approval  true where the topic turns on an approval, authorisation or
+#           sanction; OO-53 para 10: no approval shall be treated as verified
+#           on the basis of remote analysis alone.
+
+catalogue_version = "Annexure-I to OO No. 53/AMG/AAP/2026-27 dated 24.07.2026"
+
+topics = [
+  # ---- Business Process 1: Procurement & Contract Management ----
+  { id = "T1A01", bp = 1, priority = "I", serial = 1, title = "Split Purchase Orders", mode = "Remote", approval = true },
+  { id = "T1A02", bp = 1, priority = "I", serial = 2, title = "Procurement without approved Purchase Requisition", mode = "Remote", approval = true },
+  { id = "T1A03", bp = 1, priority = "I", serial = 3, title = "Purchase Orders issued after Goods Receipt", mode = "Remote" },
+  { id = "T1A04", bp = 1, priority = "I", serial = 4, title = "Unauthorized Purchase Order amendments", mode = "On-site", approval = true, note = "Needs PO change documents (ME23N change log / CDHDR-CDPOS)." },
+  { id = "T1A05", bp = 1, priority = "I", serial = 5, title = "Repeat Orders beyond prescribed limits", mode = "Remote", approval = true },
+  { id = "T1A06", bp = 1, priority = "I", serial = 6, title = "Procurement from newly created or blocked vendors", mode = "Remote" },
+  { id = "T1A07", bp = 1, priority = "I", serial = 7, title = "Long-pending/Open Purchase Orders", mode = "Remote" },
+  { id = "T1A08", bp = 1, priority = "I", serial = 8, title = "Significant price variation for identical/similar materials", mode = "Remote" },
+  { id = "T1A09", bp = 1, priority = "I", serial = 9, title = "Procurement through emergency/single-source mode beyond prescribed limits", mode = "Remote", approval = true },
+  { id = "T1A10", bp = 1, priority = "I", serial = 10, title = "Goods Receipt/Invoice mismatch (quantity or timing)", mode = "Remote" },
+  { id = "T1B01", bp = 1, priority = "II", serial = 1, title = "Vendor concentration for critical materials", mode = "Remote" },
+  { id = "T1B02", bp = 1, priority = "II", serial = 2, title = "Frequent cancellation of Purchase Orders", mode = "Remote" },
+  { id = "T1B03", bp = 1, priority = "II", serial = 3, title = "Delivery delays and non-imposition of liquidated damages", mode = "Remote" },
+  { id = "T1B04", bp = 1, priority = "II", serial = 4, title = "Performance Bank Guarantee monitoring", mode = "On-site" },
+  { id = "T1B05", bp = 1, priority = "II", serial = 5, title = "Security Deposit compliance", mode = "Remote" },
+  { id = "T1B06", bp = 1, priority = "II", serial = 6, title = "Procurement from vendors with expired registrations", mode = "Remote" },
+  { id = "T1B07", bp = 1, priority = "II", serial = 7, title = "Multiple amendments to the same contract", mode = "On-site", note = "Needs PO/contract change documents." },
+  { id = "T1B08", bp = 1, priority = "II", serial = 8, title = "Contract extensions beyond approved limits", mode = "Remote", approval = true },
+  { id = "T1B09", bp = 1, priority = "II", serial = 9, title = "Procurement outside approved rate contracts", mode = "Remote" },
+  { id = "T1B10", bp = 1, priority = "II", serial = 10, title = "Purchase Orders approved outside delegated powers", mode = "Remote", approval = true },
+
+  # ---- Business Process 2: Inventory & Materials Management ----
+  { id = "T2A01", bp = 2, priority = "I", serial = 1, title = "Negative Inventory", mode = "Remote" },
+  { id = "T2A02", bp = 2, priority = "I", serial = 2, title = "Slow-moving / Non-moving Inventory", mode = "Remote" },
+  { id = "T2A03", bp = 2, priority = "I", serial = 3, title = "Inventory Ageing beyond prescribed norms", mode = "Remote" },
+  { id = "T2A04", bp = 2, priority = "I", serial = 4, title = "Goods Issue without proper authorization / reservation", mode = "Remote", approval = true },
+  { id = "T2A05", bp = 2, priority = "I", serial = 5, title = "Manual Inventory Adjustments", mode = "Remote" },
+  { id = "T2A06", bp = 2, priority = "I", serial = 6, title = "Physical Verification Variances", mode = "Remote" },
+  { id = "T2A07", bp = 2, priority = "I", serial = 7, title = "Long-pending Goods Receipt / Goods Receipt not followed by invoice settlement", mode = "Remote" },
+  { id = "T2A08", bp = 2, priority = "I", serial = 8, title = "High-value Inventory without Movement", mode = "Remote" },
+  { id = "T2B01", bp = 2, priority = "II", serial = 1, title = "Excess Inventory beyond prescribed stocking norms", mode = "Remote" },
+  { id = "T2B02", bp = 2, priority = "II", serial = 2, title = "Frequent Stock Transfers between stores/plants", mode = "Remote" },
+  { id = "T2B03", bp = 2, priority = "II", serial = 3, title = "Inventory Write-offs / Scrap Generation", mode = "Remote", approval = true },
+  { id = "T2B04", bp = 2, priority = "II", serial = 4, title = "Repeated Reversal of Goods Movements", mode = "Remote" },
+  { id = "T2B05", bp = 2, priority = "II", serial = 5, title = "Inventory lying at project sites without utilization", mode = "Remote" },
+  { id = "T2B06", bp = 2, priority = "II", serial = 6, title = "Materials reserved but not consumed for extended periods", mode = "Remote" },
+  { id = "T2B07", bp = 2, priority = "II", serial = 7, title = "Goods Receipt after expiry of Purchase Order validity", mode = "Remote" },
+  { id = "T2B08", bp = 2, priority = "II", serial = 8, title = "Inventory in Transit pending for abnormal periods", mode = "Remote" },
+  { id = "T2B09", bp = 2, priority = "II", serial = 9, title = "Excessive Emergency Material Issues", mode = "Remote" },
+  { id = "T2B10", bp = 2, priority = "II", serial = 10, title = "Materials without defined storage location or incorrect master data", mode = "Remote" },
+
+  # ---- Business Process 3: Sales & Revenue Management ----
+  { id = "T3A01", bp = 3, priority = "I", serial = 1, title = "Sales below approved price/rate", mode = "On-site", approval = true, note = "OO-53 para 4: condition-level pricing is on-site. Can be run remotely if audit keys in the approved price list (dataset approved_prices)." },
+  { id = "T3A02", bp = 3, priority = "I", serial = 2, title = "Manual price overrides", mode = "On-site", note = "Needs condition-level pricing (KONV/PRCD_ELEMENTS)." },
+  { id = "T3A03", bp = 3, priority = "I", serial = 3, title = "Dispatch without invoice / delayed invoicing", mode = "Remote" },
+  { id = "T3A04", bp = 3, priority = "I", serial = 4, title = "Credit Notes issued after sale", mode = "Remote" },
+  { id = "T3A05", bp = 3, priority = "I", serial = 5, title = "Sales returns beyond prescribed limits", mode = "Remote" },
+  { id = "T3A06", bp = 3, priority = "I", serial = 6, title = "Customer master modifications", mode = "On-site", approval = true, note = "Needs customer master change log." },
+  { id = "T3A07", bp = 3, priority = "I", serial = 7, title = "Sales to blocked/inactive customers", mode = "Remote" },
+  { id = "T3A08", bp = 3, priority = "I", serial = 8, title = "Long outstanding receivables beyond approved credit period", mode = "Remote" },
+  { id = "T3A09", bp = 3, priority = "I", serial = 9, title = "Dispatch to customers beyond approved credit limits", mode = "Remote", approval = true },
+  { id = "T3A10", bp = 3, priority = "I", serial = 10, title = "Unauthorized discounts/rebates", mode = "On-site", approval = true, note = "Needs condition-level pricing." },
+  { id = "T3B01", bp = 3, priority = "II", serial = 1, title = "Frequent price revisions for the same customer/material", mode = "On-site", note = "Needs condition records history." },
+  { id = "T3B02", bp = 3, priority = "II", serial = 2, title = "Cancellation of invoices after dispatch", mode = "Remote" },
+  { id = "T3B03", bp = 3, priority = "II", serial = 3, title = "Manual modification of payment terms", mode = "On-site", note = "Needs change log." },
+  { id = "T3B04", bp = 3, priority = "II", serial = 4, title = "Dispatches made outside normal approval workflow", mode = "Remote", approval = true },
+  { id = "T3B05", bp = 3, priority = "II", serial = 5, title = "Multiple credit notes to the same customer", mode = "Remote" },
+  { id = "T3B06", bp = 3, priority = "II", serial = 6, title = "Unbilled dispatches pending beyond prescribed timelines", mode = "Remote" },
+  { id = "T3B07", bp = 3, priority = "II", serial = 7, title = "High-value sales to newly created customers", mode = "Remote" },
+  { id = "T3B08", bp = 3, priority = "II", serial = 8, title = "Sales to related parties without prescribed approvals", mode = "Remote", approval = true },
+  { id = "T3B09", bp = 3, priority = "II", serial = 9, title = "Frequent changes in customer credit limits", mode = "On-site", note = "Needs change log." },
+  { id = "T3B10", bp = 3, priority = "II", serial = 10, title = "Abnormal concentration of sales to a few customers", mode = "Remote" },
+
+  # ---- Business Process 4: Projects & Capital Expenditure ----
+  { id = "T4A01", bp = 4, priority = "I", serial = 1, title = "Capital projects executed without approved DPR/Administrative Approval", mode = "Remote", approval = true },
+  { id = "T4A02", bp = 4, priority = "I", serial = 2, title = "Projects exceeding approved cost estimates", mode = "Remote" },
+  { id = "T4A03", bp = 4, priority = "I", serial = 3, title = "Projects exceeding approved completion timelines", mode = "Remote" },
+  { id = "T4A04", bp = 4, priority = "I", serial = 4, title = "Long-pending Capital Work-in-Progress (CWIP)", mode = "Remote" },
+  { id = "T4A05", bp = 4, priority = "I", serial = 5, title = "Capital expenditure incurred after project closure", mode = "Remote" },
+  { id = "T4A06", bp = 4, priority = "I", serial = 6, title = "Multiple revisions to project cost or completion schedule", mode = "Remote", approval = true },
+  { id = "T4A07", bp = 4, priority = "I", serial = 7, title = "Capital assets commissioned but remaining in CWIP", mode = "Remote" },
+  { id = "T4A08", bp = 4, priority = "I", serial = 8, title = "Projects with prolonged inactivity despite expenditure", mode = "Remote" },
+  { id = "T4B01", bp = 4, priority = "II", serial = 1, title = "Variation orders beyond prescribed approval limits", mode = "Remote", approval = true },
+  { id = "T4B02", bp = 4, priority = "II", serial = 2, title = "Time extensions granted repeatedly", mode = "Remote" },
+  { id = "T4B03", bp = 4, priority = "II", serial = 3, title = "Milestone slippages", mode = "Remote" },
+  { id = "T4B04", bp = 4, priority = "II", serial = 4, title = "Idle project inventory", mode = "Remote" },
+  { id = "T4B05", bp = 4, priority = "II", serial = 5, title = "Projects with abnormal expenditure during the last quarter", mode = "Remote" },
+  { id = "T4B06", bp = 4, priority = "II", serial = 6, title = "Project expenditure without corresponding physical progress", mode = "On-site" },
+  { id = "T4B07", bp = 4, priority = "II", serial = 7, title = "Delayed commissioning after mechanical completion", mode = "Remote" },
+  { id = "T4B08", bp = 4, priority = "II", serial = 8, title = "Closure of projects without completion of statutory clearances", mode = "On-site", approval = true },
+  { id = "T4B09", bp = 4, priority = "II", serial = 9, title = "Frequent change in project scope", mode = "On-site" },
+  { id = "T4B10", bp = 4, priority = "II", serial = 10, title = "Projects remaining open after completion of objectives", mode = "Remote" },
+
+  # ---- Business Process 5: Plant Maintenance ----
+  { id = "T5A01", bp = 5, priority = "I", serial = 1, title = "Overdue Preventive Maintenance (PM) activities", mode = "Remote" },
+  { id = "T5A02", bp = 5, priority = "I", serial = 2, title = "Long-pending Maintenance Work Orders", mode = "Remote" },
+  { id = "T5A03", bp = 5, priority = "I", serial = 3, title = "Repeated Breakdown of Critical Equipment", mode = "Remote" },
+  { id = "T5A04", bp = 5, priority = "I", serial = 4, title = "Preventive Maintenance converted into Breakdown Maintenance", mode = "Remote" },
+  { id = "T5A05", bp = 5, priority = "I", serial = 5, title = "Maintenance Work Orders closed without recording completion details", mode = "Remote" },
+  { id = "T5A06", bp = 5, priority = "I", serial = 6, title = "Abnormal delay between maintenance notification and work order creation", mode = "Remote" },
+  { id = "T5A07", bp = 5, priority = "I", serial = 7, title = "Long-pending Maintenance Notifications", mode = "Remote" },
+  { id = "T5A08", bp = 5, priority = "I", serial = 8, title = "Frequent emergency maintenance jobs", mode = "Remote" },
+  { id = "T5B01", bp = 5, priority = "II", serial = 1, title = "Maintenance history not recorded for critical equipment", mode = "Remote" },
+  { id = "T5B02", bp = 5, priority = "II", serial = 2, title = "Calibration/inspection schedules overdue", mode = "Remote" },
+  { id = "T5B03", bp = 5, priority = "II", serial = 3, title = "Repeated maintenance on the same equipment within a short period", mode = "Remote" },
+  { id = "T5B04", bp = 5, priority = "II", serial = 4, title = "Work Orders remaining technically complete but not finally closed", mode = "Remote" },
+  { id = "T5B05", bp = 5, priority = "II", serial = 5, title = "Excessive downtime of critical equipment", mode = "Remote" },
+  { id = "T5B06", bp = 5, priority = "II", serial = 6, title = "Maintenance activities undertaken without approved maintenance plans", mode = "Remote", approval = true },
+  { id = "T5B07", bp = 5, priority = "II", serial = 7, title = "High-value maintenance jobs repeatedly outsourced", mode = "Remote" },
+  { id = "T5B08", bp = 5, priority = "II", serial = 8, title = "Abnormal consumption of maintenance spares", mode = "Remote" },
+  { id = "T5B09", bp = 5, priority = "II", serial = 9, title = "Statutory inspection schedules not complied with", mode = "Remote" },
+  { id = "T5B10", bp = 5, priority = "II", serial = 10, title = "Repeat defects after maintenance", mode = "Remote" },
+
+  # ---- Business Process 6: Production & Operations ----
+  { id = "T6A01", bp = 6, priority = "I", serial = 1, title = "Production Orders remaining open beyond prescribed period", mode = "Remote" },
+  { id = "T6A02", bp = 6, priority = "I", serial = 2, title = "Abnormal variance between planned and actual production", mode = "Remote" },
+  { id = "T6A03", bp = 6, priority = "I", serial = 3, title = "Excess consumption of raw materials against standard BOM", mode = "Remote" },
+  { id = "T6A04", bp = 6, priority = "I", serial = 4, title = "Low production yield/recovery", mode = "Remote" },
+  { id = "T6A05", bp = 6, priority = "I", serial = 5, title = "High production losses/scrap generation", mode = "Remote" },
+  { id = "T6A06", bp = 6, priority = "I", serial = 6, title = "Production orders completed without recording material consumption", mode = "Remote" },
+  { id = "T6A07", bp = 6, priority = "I", serial = 7, title = "Significant idle production capacity", mode = "Remote" },
+  { id = "T6A08", bp = 6, priority = "I", serial = 8, title = "Delayed closure of production orders after completion", mode = "Remote" },
+  { id = "T6B01", bp = 6, priority = "II", serial = 1, title = "Frequent changes in Bill of Materials (BOM)", mode = "On-site", note = "Needs engineering change log." },
+  { id = "T6B02", bp = 6, priority = "II", serial = 2, title = "Frequent changes in routing/production parameters", mode = "On-site", note = "Needs change log." },
+  { id = "T6B03", bp = 6, priority = "II", serial = 3, title = "Rework orders exceeding prescribed norms", mode = "Remote" },
+  { id = "T6B04", bp = 6, priority = "II", serial = 4, title = "Production stoppages beyond prescribed limits", mode = "Remote" },
+  { id = "T6B05", bp = 6, priority = "II", serial = 5, title = "Production batches rejected by Quality Control", mode = "Remote" },
+  { id = "T6B06", bp = 6, priority = "II", serial = 6, title = "Abnormal work-in-progress pending for extended periods", mode = "Remote" },
+  { id = "T6B07", bp = 6, priority = "II", serial = 7, title = "Unplanned production orders", mode = "Remote" },
+  { id = "T6B08", bp = 6, priority = "II", serial = 8, title = "Production completed without quality clearance", mode = "Remote" },
+  { id = "T6B09", bp = 6, priority = "II", serial = 9, title = "Repeated rescheduling of production orders", mode = "Remote" },
+  { id = "T6B10", bp = 6, priority = "II", serial = 10, title = "Production variance concentrated in specific plants/lines", mode = "Remote" },
+
+  # ---- Business Process 7: Finance & Accounting ----
+  { id = "T7A01", bp = 7, priority = "I", serial = 1, title = "Manual Journal Entries", mode = "Remote" },
+  { id = "T7A02", bp = 7, priority = "I", serial = 2, title = "Journal Entries posted after accounting period closure", mode = "Remote" },
+  { id = "T7A03", bp = 7, priority = "I", serial = 3, title = "High-value manual accounting entries", mode = "Remote" },
+  { id = "T7A04", bp = 7, priority = "I", serial = 4, title = "Accounting entries posted directly to sensitive GL accounts", mode = "Remote" },
+  { id = "T7A05", bp = 7, priority = "I", serial = 5, title = "Duplicate payments", mode = "Remote" },
+  { id = "T7A06", bp = 7, priority = "I", serial = 6, title = "Payments processed without complete approval workflow", mode = "Remote", approval = true },
+  { id = "T7A07", bp = 7, priority = "I", serial = 7, title = "Long-pending unreconciled bank reconciliation items", mode = "Remote" },
+  { id = "T7A08", bp = 7, priority = "I", serial = 8, title = "Frequent reversals of accounting entries", mode = "Remote" },
+  { id = "T7B01", bp = 7, priority = "II", serial = 1, title = "Round-value journal entries above prescribed thresholds", mode = "Remote" },
+  { id = "T7B02", bp = 7, priority = "II", serial = 2, title = "Accounting entries posted on holidays or outside office hours", mode = "Remote" },
+  { id = "T7B03", bp = 7, priority = "II", serial = 3, title = "Dormant General Ledger accounts becoming active", mode = "Remote" },
+  { id = "T7B04", bp = 7, priority = "II", serial = 4, title = "Repeated use of suspense/temporary accounts", mode = "Remote" },
+  { id = "T7B05", bp = 7, priority = "II", serial = 5, title = "Long-pending advances requiring adjustment", mode = "Remote" },
+  { id = "T7B06", bp = 7, priority = "II", serial = 6, title = "Frequent changes to accounting master data (GL, cost centres, profit centres)", mode = "On-site", note = "Needs master data change log." },
+  { id = "T7B07", bp = 7, priority = "II", serial = 7, title = "Payments released despite unresolved accounting exceptions", mode = "Remote", approval = true },
+  { id = "T7B08", bp = 7, priority = "II", serial = 8, title = "Accounting documents repeatedly modified after posting", mode = "On-site", note = "Needs document change log." },
+  { id = "T7B09", bp = 7, priority = "II", serial = 9, title = "Unusual month-end or year-end concentration of manual postings", mode = "Remote" },
+  { id = "T7B10", bp = 7, priority = "II", serial = 10, title = "Long-pending reconciliation between sub-ledgers and General Ledger", mode = "Remote" },
+
+  # ---- Business Process 8: Asset Management ----
+  { id = "T8A01", bp = 8, priority = "I", serial = 1, title = "Delayed capitalisation of completed assets", mode = "Remote" },
+  { id = "T8A02", bp = 8, priority = "I", serial = 2, title = "Assets remaining idle after capitalisation", mode = "Remote" },
+  { id = "T8A03", bp = 8, priority = "I", serial = 3, title = "Asset master records with incomplete or inconsistent information", mode = "Remote" },
+  { id = "T8A04", bp = 8, priority = "I", serial = 4, title = "Assets without unique identification/location details", mode = "Remote" },
+  { id = "T8A05", bp = 8, priority = "I", serial = 5, title = "Assets due for physical verification but not verified", mode = "Remote" },
+  { id = "T8A06", bp = 8, priority = "I", serial = 6, title = "Asset transfers without prescribed approvals", mode = "Remote", approval = true },
+  { id = "T8A07", bp = 8, priority = "I", serial = 7, title = "Assets disposed of without completion of prescribed approval process", mode = "Remote", approval = true },
+  { id = "T8A08", bp = 8, priority = "I", serial = 8, title = "Negative or abnormal asset values/depreciation records", mode = "Remote" },
+  { id = "T8B01", bp = 8, priority = "II", serial = 1, title = "Frequent changes to asset master records", mode = "On-site", note = "Needs asset master change log." },
+  { id = "T8B02", bp = 8, priority = "II", serial = 2, title = "High-value assets remaining unutilised for prolonged periods", mode = "Remote" },
+  { id = "T8B03", bp = 8, priority = "II", serial = 3, title = "Assets without assigned cost centre/profit centre", mode = "Remote" },
+  { id = "T8B04", bp = 8, priority = "II", serial = 4, title = "Frequent changes in useful life/depreciation parameters", mode = "On-site", approval = true, note = "Needs asset master change log." },
+  { id = "T8B05", bp = 8, priority = "II", serial = 5, title = "Assets retired but continuing in active asset register", mode = "Remote" },
+  { id = "T8B06", bp = 8, priority = "II", serial = 6, title = "Assets fully depreciated but continuing in productive use", mode = "Remote" },
+  { id = "T8B07", bp = 8, priority = "II", serial = 7, title = "Asset movements between locations without corresponding ERP updates", mode = "On-site" },
+  { id = "T8B08", bp = 8, priority = "II", serial = 8, title = "Temporary assets remaining open beyond prescribed period", mode = "Remote" },
+  { id = "T8B09", bp = 8, priority = "II", serial = 9, title = "High-value assets without insurance details (where tracked)", mode = "Remote" },
+  { id = "T8B10", bp = 8, priority = "II", serial = 10, title = "Assets capitalised but pending statutory registration/commissioning formalities", mode = "Remote" },
+
+  # ---- Business Process 9: Human Resource Management (OO-53 para 4: HR/payroll data on-site) ----
+  { id = "T9A01", bp = 9, priority = "I", serial = 1, title = "Employees continuing in service beyond retirement/superannuation date", mode = "On-site" },
+  { id = "T9A02", bp = 9, priority = "I", serial = 2, title = "Employees receiving salary despite prolonged absence or separation", mode = "On-site" },
+  { id = "T9A03", bp = 9, priority = "I", serial = 3, title = "Duplicate employee master records", mode = "On-site" },
+  { id = "T9A04", bp = 9, priority = "I", serial = 4, title = "Excess payment of overtime beyond prescribed limits", mode = "On-site" },
+  { id = "T9A05", bp = 9, priority = "I", serial = 5, title = "Leave encashment beyond admissible limits", mode = "On-site" },
+  { id = "T9A06", bp = 9, priority = "I", serial = 6, title = "Unauthorized changes in employee master data", mode = "On-site", approval = true },
+  { id = "T9A07", bp = 9, priority = "I", serial = 7, title = "Payroll processed without completion of prescribed approval workflow", mode = "On-site", approval = true },
+  { id = "T9A08", bp = 9, priority = "I", serial = 8, title = "Employees without mandatory statutory details (PAN, Aadhaar, etc.)", mode = "On-site" },
+  { id = "T9B01", bp = 9, priority = "II", serial = 1, title = "Frequent retrospective changes in pay or allowances", mode = "On-site", approval = true },
+  { id = "T9B02", bp = 9, priority = "II", serial = 2, title = "Unusual concentration of promotions/transfers during a short period", mode = "On-site" },
+  { id = "T9B03", bp = 9, priority = "II", serial = 3, title = "Employees holding multiple active assignments/posts", mode = "On-site" },
+  { id = "T9B04", bp = 9, priority = "II", serial = 4, title = "Long-pending vacancies in critical positions", mode = "On-site" },
+  { id = "T9B05", bp = 9, priority = "II", serial = 5, title = "Attendance anomalies (where integrated with biometric systems)", mode = "On-site" },
+  { id = "T9B06", bp = 9, priority = "II", serial = 6, title = "Employees receiving multiple allowances contrary to policy", mode = "On-site" },
+  { id = "T9B07", bp = 9, priority = "II", serial = 7, title = "Contractual employees continuing beyond approved tenure", mode = "On-site" },
+  { id = "T9B08", bp = 9, priority = "II", serial = 8, title = "Delayed updating of employee separation/retirement records", mode = "On-site" },
+
+  # ---- Company-specific topics (OO-53 para 6) ----
+  # MSME transactions (OO-53 para 13). Kept in the library so that the dedicated
+  # MSME team and any Lead Team can run the same tests.
+  { id = "TCS01", bp = 7, priority = "CS", serial = 1, title = "Delayed payments to Micro and Small Enterprises (MSMED Act, 2006, s.15-16)", mode = "Remote" },
+  { id = "TCS02", bp = 1, priority = "CS", serial = 2, title = "Procurement from Micro and Small Enterprises below 25% target (Public Procurement Policy for MSEs Order, 2012)", mode = "Remote" },
+]
+
+[business_processes]
+"1" = "Procurement & Contract Management"
+"2" = "Inventory & Materials Management"
+"3" = "Sales & Revenue Management"
+"4" = "Projects & Capital Expenditure"
+"5" = "Plant Maintenance"
+"6" = "Production & Operations"
+"7" = "Finance & Accounting"
+"8" = "Asset Management"
+"9" = "Human Resource Management"
